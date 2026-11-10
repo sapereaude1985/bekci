@@ -81,6 +81,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -349,7 +350,12 @@ private fun batteryExempt(ctx: Context) {
 @Composable
 private fun Header(role: String?) {
     Column(Modifier.padding(top = 8.dp, bottom = 4.dp)) {
-        Text("Bekçi", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(painterResource(R.drawable.ic_logo), contentDescription = null, modifier = Modifier.size(48.dp))
+            Spacer(Modifier.width(14.dp))
+            Text("Bekçi", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(6.dp))
         Text(
             when (role) {
                 ROLE_CAM -> "Bu telefon: evdeki kamera"

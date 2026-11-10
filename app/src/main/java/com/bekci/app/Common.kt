@@ -163,7 +163,7 @@ object Notif {
 
     fun status(ctx: Context, title: String, text: String): Notification =
         NotificationCompat.Builder(ctx, CH_STATUS)
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setSmallIcon(R.drawable.ic_stat_bekci)
             .setContentTitle(title)
             .setContentText(text)
             .setOngoing(true)
@@ -176,9 +176,10 @@ object Notif {
             ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
         val b = NotificationCompat.Builder(ctx, if (important) CH_ALERT else CH_STATUS)
-            .setSmallIcon(if (important) android.R.drawable.ic_dialog_alert else android.R.drawable.ic_menu_camera)
+            .setSmallIcon(if (important) R.drawable.ic_stat_bekci else R.drawable.ic_stat_bekci)
             .setContentTitle(title)
             .setContentText(text)
+            .setColor(0xFF2F54D6.toInt())
             .setAutoCancel(true)
             .setContentIntent(openApp(ctx))
             .setPriority(if (important) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_LOW)
