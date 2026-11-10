@@ -11,8 +11,9 @@ Eski bir Android telefonu ev kamerasına çevirir. Hareket olunca yanındaki tel
 
 ## Kullanım
 
-- Evde kalacak telefonda: kodu not al, “Bu telefon kamera olsun”a dokun, şarja tak.
-- Yanındaki telefonda: aynı kodu yaz, “Bu telefon uyarı alsın”a dokun.
+- Evde kalacak telefonda “QR kodu göster”e dokun. Yanındaki telefonda “QR kodu tara”ya dokunup bu kodu okut. (İstersen kodu elle de yazabilirsin.)
+- Evdeki telefonda “Bu telefon kamera olsun”a dokun, şarja tak.
+- Yanındaki telefonda “Bu telefon uyarı alsın”a dokun.
 - İki telefonda da “Pil kısıtlamasını kaldır”a dokun.
 - Kamera başlayınca diğer telefona “Kamera izlemeye başladı” bildirimi gelir; eşleştirme çalışıyor demektir.
 

@@ -4,7 +4,9 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
@@ -22,6 +24,11 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.integration.android.IntentIntegrator
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.io.File
 
 class MainActivity : Activity() {
@@ -30,6 +37,8 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var lastText: TextView
     private lateinit var lastImage: ImageView
+    private lateinit var qrImage: ImageView
+    private lateinit var qrToggle: Button
     private var pending: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,7 +70,7 @@ class MainActivity : Activity() {
         col.addView(statusText)
 
         col.addView(label("Eşleştirme kodu", 17f, true))
-        col.addView(label("İki telefonda da aynı kod olmalı. Bu telefondaki kodu diğer telefona aynen yaz.", 14f))
+        col.addView(label("İki telefonda da aynı kod olmalı. En kolayı: evdeki telefonda “QR kodu göster”e, yanındaki telefonda “QR kodu tara”ya dokun. İstersen kodu elle de yazabilirsin.", 14f))
         codeEdit = EditText(this).apply {
             setText(p.getString("code", ""))
             textSize = 22f
@@ -71,7 +80,25 @@ class MainActivity : Activity() {
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
         col.addView(codeEdit)
-        col.addView(button("Yeni kod oluştur") { codeEdit.setText(Pairing.newCode()) })
+        col.addView(button("QR kodu tara") { scanQr() })
+        qrToggle = button("QR kodu göster") { toggleQr() }
+        col.addView(qrToggle)
+        qrImage = ImageView(this).apply {
+            adjustViewBounds = true
+            visibility = View.GONE
+            setBackgroundColor(Color.WHITE)
+            setPadding(px(12), px(12), px(12), px(12))
+            contentDescription = "Eşleştirme QR kodu"
+        }
+        col.addView(qrImage, LinearLayout.LayoutParams(px(260), px(260)).apply {
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+            topMargin = px(8)
+            bottomMargin = px(8)
+        })
+        col.addView(button("Yeni kod oluştur") {
+            codeEdit.setText(Pairing.newCode())
+            if (qrImage.visibility == View.VISIBLE) showQr()
+        })
 
         col.addView(label("Evde kalacak telefon", 17f, true))
         val sensLabel = label("", 14f)
@@ -221,6 +248,66 @@ class MainActivity : Activity() {
         } else {
             lastImage.visibility = View.GONE
         }
+    }
+
+    private fun qrBitmap(text: String, size: Int): Bitmap {
+        val hints = mapOf(
+            EncodeHintType.MARGIN to 1,
+            EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M
+        )
+        val m = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, hints)
+        val px = IntArray(size * size)
+        for (y in 0 until size) for (x in 0 until size) {
+            px[y * size + x] = if (m.get(x, y)) Color.BLACK else Color.WHITE
+        }
+        return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
+    }
+
+    private fun showQr() {
+        val code = saveCode() ?: return
+        qrImage.setImageBitmap(qrBitmap(QR_PREFIX + Pairing.normalize(code), 600))
+        qrImage.visibility = View.VISIBLE
+        qrToggle.text = "QR kodu gizle"
+    }
+
+    private fun toggleQr() {
+        if (qrImage.visibility == View.VISIBLE) {
+            qrImage.visibility = View.GONE
+            qrToggle.text = "QR kodu göster"
+        } else showQr()
+    }
+
+    private fun scanQr() {
+        IntentIntegrator(this)
+            .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+            .setPrompt("Diğer telefondaki Bekçi QR kodunu çerçeveye getir")
+            .setBeepEnabled(false)
+            .setOrientationLocked(false)
+            .initiateScan()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        val r = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
+        if (r == null) {
+            super.onActivityResult(requestCode, resultCode, data)
+            return
+        }
+        val raw = r.contents ?: return
+        val body = if (raw.startsWith(QR_PREFIX)) raw.removePrefix(QR_PREFIX) else raw
+        val n = Pairing.normalize(body)
+        if (n.length != 12) {
+            toast("Bu bir Bekçi QR kodu değil.")
+            return
+        }
+        codeEdit.setText(Pairing.pretty(n))
+        saveCode()
+        qrImage.visibility = View.GONE
+        qrToggle.text = "QR kodu göster"
+        toast("Eşleştirme kodu alındı: ${Pairing.pretty(n)}. Şimdi telefonun görevini seç.")
+    }
+
+    companion object {
+        const val QR_PREFIX = "bekci:"
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
