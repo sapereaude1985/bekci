@@ -89,6 +89,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.graphics.drawable.IconCompat
+import androidx.compose.material3.CircularProgressIndicator
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
@@ -135,6 +139,14 @@ fun HomeScreen() {
     val camMotion = remember(tick) { p.getBoolean("camMotion", true) }
     val pendingSince = remember(tick) { p.getLong("camMotionPending", 0L) }
     val pendingAge = System.currentTimeMillis() - pendingSince
+
+    var fenceOn by remember { mutableStateOf(p.getBoolean("evHatirlat", false)) }
+    var fenceBusy by remember { mutableStateOf(false) }
+    var askHome by remember { mutableStateOf(false) }
+    var askBg by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (fenceOn && p.getString("role", null) == ROLE_WATCH) HomeFence.register(ctx)
+    }
 
     var afterPerms by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -222,8 +234,58 @@ fun HomeScreen() {
             say("Kameraya iletilemedi. İnternet bağlantını kontrol et.")
         }
     }
+    fun captureAndRegister() {
+        fenceBusy = true
+        HomeFence.captureHome(ctx) { ok ->
+            if (!ok) {
+                fenceBusy = false
+                say("Konum alınamadı. Telefonun konum ayarının açık olduğundan emin ol.")
+            } else HomeFence.register(ctx) { reg ->
+                fenceBusy = false
+                if (reg) {
+                    p.edit().putBoolean("evHatirlat", true).apply()
+                    fenceOn = true
+                    say("Ev konumu kaydedildi. Evden uzaklaşınca sorarım.")
+                } else say("Konum takibi başlatılamadı. Konum açık mı, Google Play Hizmetleri var mı?")
+            }
+        }
+    }
+    val bgLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) captureAndRegister()
+        else say("Konum izni “Her zaman izin ver” olmadan evden çıkış algılanamaz.")
+    }
+    fun startFence() {
+        withPerms(listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION) + notifPerm()) {
+            if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+                say("Kesin konum izni gerekiyor (yaklaşık konum yetmez).")
+                return@withPerms
+            }
+            if (Build.VERSION.SDK_INT >= 29 && !granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) askBg = true
+            else captureAndRegister()
+        }
+    }
+    fun stopFence() {
+        HomeFence.unregister(ctx)
+        p.edit().putBoolean("evHatirlat", false).apply()
+        fenceOn = false
+    }
+    fun pinShortcut() {
+        if (!ShortcutManagerCompat.isRequestPinShortcutSupported(ctx)) {
+            say("Bu telefon kısayol eklemeyi desteklemiyor. Uygulama listesinde Bekçi’ye basılı tutup ana ekrana sürükle.")
+            return
+        }
+        val info = ShortcutInfoCompat.Builder(ctx, "bekci-ana")
+            .setShortLabel("Bekçi")
+            .setIcon(IconCompat.createWithResource(ctx, R.mipmap.ic_launcher))
+            .setIntent(Intent(ctx, MainActivity::class.java).setAction(Intent.ACTION_MAIN))
+            .build()
+        try { ShortcutManagerCompat.requestPinShortcut(ctx, info, null) } catch (e: Exception) {
+            say("Kısayol eklenemedi.")
+        }
+    }
     fun pickRole(r: String?) {
         if (r == null) {
+            if (fenceOn) stopFence()
             ctx.stopService(Intent(ctx, CameraService::class.java))
             ctx.stopService(Intent(ctx, WatchService::class.java))
             p.edit().remove("role").apply()
@@ -260,6 +322,7 @@ fun HomeScreen() {
                         if (camOn) say("Değişiklik, izlemeyi yeniden başlatınca geçerli olur.")
                     },
                     onBattery = { batteryExempt(ctx) },
+                    onPin = { pinShortcut() },
                     onChangeRole = { pickRole(null) }
                 )
                 ROLE_WATCH -> WatcherHome(
@@ -273,6 +336,10 @@ fun HomeScreen() {
                         else -> "Kapalı. Kamera yalnızca canlı izleme için açık."
                     },
                     onMotion = { setRemoteMotion(it) },
+                    fenceOn = fenceOn, fenceBusy = fenceBusy,
+                    onFence = { if (it) askHome = true else stopFence() },
+                    onUpdateHome = { askHome = true },
+                    onPin = { pinShortcut() },
                     onScan = { scan() },
                     onManual = { manualOpen = true },
                     onLive = { ctx.startActivity(Intent(ctx, LiveActivity::class.java)) },
@@ -314,6 +381,31 @@ fun HomeScreen() {
                 }) { Text("Bağlan") }
             },
             dismissButton = { TextButton(onClick = { manualOpen = false }) { Text("Vazgeç") } }
+        )
+    }
+
+    if (askHome) {
+        AlertDialog(
+            onDismissRequest = { askHome = false },
+            title = { Text("Şu an evde misin?") },
+            text = { Text("Bulunduğun yer ev konumu olarak kaydedilecek. Evden yaklaşık ${HomeFence.RADIUS.toInt()} m uzaklaştığında, hareket algılama kapalıysa bildirim gelir. Bildirimdeki düğmeye basarsan açılır; basmazsan hiçbir şey değişmez.") },
+            confirmButton = { TextButton(onClick = { askHome = false; startFence() }) { Text("Evdeyim, kaydet") } },
+            dismissButton = { TextButton(onClick = { askHome = false }) { Text("Vazgeç") } }
+        )
+    }
+
+    if (askBg) {
+        AlertDialog(
+            onDismissRequest = { askBg = false },
+            title = { Text("Bir izin daha gerekiyor") },
+            text = { Text("Telefon cebindeyken evden çıktığını anlayabilmem için konum iznini “Her zaman izin ver” yapman gerekiyor. Açılacak ekranda bunu seç. Konumun telefondan çıkmaz, yalnızca evden uzaklaşıp uzaklaşmadığına bakılır.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    askBg = false
+                    if (Build.VERSION.SDK_INT >= 29) bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                }) { Text("Devam") }
+            },
+            dismissButton = { TextButton(onClick = { askBg = false }) { Text("Vazgeç") } }
         )
     }
 
@@ -486,7 +578,7 @@ private fun CameraHome(
     camOn: Boolean, code: String, sens: Float, shareAudio: Boolean, batteryOk: Boolean,
     motion: Boolean, onMotion: (Boolean) -> Unit,
     onToggle: () -> Unit, onNewCode: () -> Unit, onSens: (Float) -> Unit, onSensDone: () -> Unit,
-    onAudio: (Boolean) -> Unit, onBattery: () -> Unit, onChangeRole: () -> Unit
+    onAudio: (Boolean) -> Unit, onBattery: () -> Unit, onPin: () -> Unit, onChangeRole: () -> Unit
 ) {
     StatusCard(
         on = camOn,
@@ -547,6 +639,8 @@ private fun CameraHome(
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         BatteryRow(batteryOk, onBattery)
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+        PinRow(onPin)
     }
 
     Text(
@@ -561,6 +655,7 @@ private fun CameraHome(
 private fun WatcherHome(
     paired: Boolean, watchOn: Boolean, code: String, lastTime: Long, batteryOk: Boolean,
     camMotion: Boolean, motionStatus: String, onMotion: (Boolean) -> Unit,
+    fenceOn: Boolean, fenceBusy: Boolean, onFence: (Boolean) -> Unit, onUpdateHome: () -> Unit, onPin: () -> Unit,
     onScan: () -> Unit, onManual: () -> Unit, onLive: () -> Unit, onToggle: () -> Unit,
     onBattery: () -> Unit, onChangeRole: () -> Unit
 ) {
@@ -629,6 +724,18 @@ private fun WatcherHome(
         }
     }
 
+    Section("Evden çıkınca hatırlat") {
+        SettingRow(
+            if (fenceOn) "Açık" else "Kapalı",
+            if (fenceOn) "Evden yaklaşık ${HomeFence.RADIUS.toInt()} m uzaklaşınca, hareket algılama kapalıysa açmak isteyip istemediğin sorulur."
+            else "Evden uzaklaştığında hareket algılamayı açmayı hatırlatır. Ayarlamak için evde olman gerekir."
+        ) {
+            if (fenceBusy) CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
+            else Switch(checked = fenceOn, onCheckedChange = onFence)
+        }
+        if (fenceOn) TextButton(onClick = onUpdateHome) { Text("Ev konumunu buraya güncelle") }
+    }
+
     Section("Son hareket") {
         if (lastTime > 0) {
             val ctx = LocalContext.current
@@ -654,6 +761,15 @@ private fun WatcherHome(
         SettingRow("Eşleştirme", code) { TextButton(onClick = onScan) { Text("Yeniden tara") } }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         BatteryRow(batteryOk, onBattery)
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+        PinRow(onPin)
     }
     TextButton(onClick = onChangeRole) { Text("Bu telefonun görevini değiştir") }
+}
+
+@Composable
+private fun PinRow(onPin: () -> Unit) {
+    SettingRow("Ana ekrana ekle", "Bekçi simgesini ana ekrana koyar.") {
+        FilledTonalButton(onClick = onPin) { Text("Ekle") }
+    }
 }

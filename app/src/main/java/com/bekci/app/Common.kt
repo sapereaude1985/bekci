@@ -142,6 +142,8 @@ object Ntfy {
 object Notif {
     const val CH_STATUS = "durum"
     const val CH_ALERT = "hareket"
+    const val CH_REMIND = "hatirlatma"
+    const val ID_REMIND = 50
     private var nextId = 100
 
     fun channels(ctx: Context) {
@@ -153,6 +155,9 @@ object Notif {
         alert.enableVibration(true)
         alert.vibrationPattern = longArrayOf(0, 400, 150, 400, 150, 400)
         nm.createNotificationChannel(alert)
+        nm.createNotificationChannel(
+            NotificationChannel(CH_REMIND, "Evden çıkış hatırlatması", NotificationManager.IMPORTANCE_HIGH)
+        )
     }
 
     private fun openApp(ctx: Context): PendingIntent = PendingIntent.getActivity(
@@ -169,6 +174,35 @@ object Notif {
             .setOngoing(true)
             .setContentIntent(openApp(ctx))
             .build()
+
+    fun leftHome(ctx: Context) {
+        channels(ctx)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val on = PendingIntent.getBroadcast(
+            ctx, 8,
+            Intent(ctx, ActionReceiver::class.java).setAction(ActionReceiver.ACTION_MOTION_ON),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val text = "Evdeki kamerada hareket algılama kapalı. Açmak ister misin?"
+        val n = NotificationCompat.Builder(ctx, CH_REMIND)
+            .setSmallIcon(R.drawable.ic_stat_bekci)
+            .setColor(0xFF2F54D6.toInt())
+            .setContentTitle("Evden uzaklaştın")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(openApp(ctx))
+            .setAutoCancel(true)
+            .addAction(R.drawable.ic_stat_bekci, "Hareket algılamayı aç", on)
+            .build()
+        ctx.getSystemService(NotificationManager::class.java).notify(ID_REMIND, n)
+    }
+
+    fun cancel(ctx: Context, id: Int) {
+        try { ctx.getSystemService(NotificationManager::class.java).cancel(id) } catch (e: Exception) { }
+    }
 
     @Synchronized
     fun alert(ctx: Context, title: String, text: String, bmp: Bitmap?, important: Boolean) {

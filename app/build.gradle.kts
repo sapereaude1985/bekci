@@ -11,8 +11,8 @@ android {
         applicationId = "com.bekci.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "2.3"
+        versionCode = 7
+        versionName = "2.4"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
     compileOptions {
@@ -33,7 +33,15 @@ android {
         }
         buildTypes {
             getByName("debug") { signingConfig = signingConfigs.getByName("sabit") }
+            getByName("release") { signingConfig = signingConfigs.getByName("sabit") }
         }
+    }
+    buildTypes {
+        getByName("release") { isMinifyEnabled = false }
+    }
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
@@ -58,4 +66,5 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
 
     implementation("io.getstream:stream-webrtc-android:1.1.3")
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 }

@@ -125,24 +125,25 @@ object Signal {
         return out.toByteArray()
     }
 
-    fun send(topic: String, code: String, msg: JSONObject, onError: (() -> Unit)? = null) {
-        exec.execute {
-            var ok = false
-            try {
-                val enc = Pairing.encrypt(code, deflate(msg.toString().toByteArray(Charsets.UTF_8)))
-                val b64 = Base64.encodeToString(enc, Base64.NO_WRAP)
-                for (attempt in 1..3) {
-                    try {
-                        if (b64.length < 3500) Ntfy.postText(topic, "s:$b64") else Ntfy.putFile(topic, enc)
-                        ok = true
-                        break
-                    } catch (e: Exception) {
-                        Thread.sleep(1500L * attempt)
-                    }
+    /** Blocking send; call off the main thread. */
+    fun sendSync(topic: String, code: String, msg: JSONObject): Boolean {
+        try {
+            val enc = Pairing.encrypt(code, deflate(msg.toString().toByteArray(Charsets.UTF_8)))
+            val b64 = Base64.encodeToString(enc, Base64.NO_WRAP)
+            for (attempt in 1..3) {
+                try {
+                    if (b64.length < 3500) Ntfy.postText(topic, "s:$b64") else Ntfy.putFile(topic, enc)
+                    return true
+                } catch (e: Exception) {
+                    Thread.sleep(1500L * attempt)
                 }
-            } catch (e: Exception) { }
-            if (!ok) onError?.invoke()
-        }
+            }
+        } catch (e: Exception) { }
+        return false
+    }
+
+    fun send(topic: String, code: String, msg: JSONObject, onError: (() -> Unit)? = null) {
+        exec.execute { if (!sendSync(topic, code, msg)) onError?.invoke() }
     }
 
     fun decode(o: JSONObject, code: String): JSONObject? {
