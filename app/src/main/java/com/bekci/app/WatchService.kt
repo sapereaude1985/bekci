@@ -90,7 +90,14 @@ class WatchService : Service() {
 
         val msg = o.optString("message")
         val att = o.optJSONObject("attachment")
+        if (att == null && (msg == "motion_on" || msg == "motion_off")) {
+            val on = msg == "motion_on"
+            Prefs.p(this).edit().putBoolean("camMotion", on).putLong("camMotionPending", 0L).apply()
+            Notif.alert(this, if (on) "Hareket algılama açıldı" else "Hareket algılama kapatıldı", fmtTime(time), null, false)
+            return
+        }
         if (att == null && msg == "start") {
+            Prefs.p(this).edit().putBoolean("camMotion", true).apply()
             Notif.alert(this, "Kamera izlemeye başladı", fmtTime(time), null, false)
             return
         }

@@ -3,6 +3,7 @@ package com.bekci.app
 import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -60,11 +61,16 @@ class CameraService : LifecycleService() {
     private var live: CamLive? = null
     private var liveSid = ""
     private var micOk = false
+    @Volatile private var motionOn = true
+    private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
+        if (key == "hareket") main.post { applyMotion(sp.getBoolean("hareket", true)) }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         Notif.channels(this)
-        val n = Notif.status(this, "Kamera izliyor", "Hareket olursa diğer telefona haber verilecek.")
+        if (!started) motionOn = Prefs.p(this).getBoolean("hareket", true)
+        val n = statusNotif(false)
         if (!started) {
             micOk = Prefs.p(this).getBoolean("ses", true) &&
                 checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -103,12 +109,14 @@ class CameraService : LifecycleService() {
             wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "bekci:kamera").apply {
                 acquire(24 * 60 * 60 * 1000L)
             }
+            Prefs.p(this).registerOnSharedPreferenceChangeListener(prefListener)
             startCamera()
             sig = SignalChannel(Pairing.camInbox(c), c, onOpen = {}, onMsg = { m -> main.post { onSignal(m) } })
                 .also { it.start() }
             val t = topic
             netExec.execute {
                 try { Ntfy.postText(t, "start") } catch (e: Exception) { }
+                if (!motionOn) try { Ntfy.postText(t, "motion_off") } catch (e: Exception) { }
             }
         }
         return START_NOT_STICKY
@@ -138,6 +146,7 @@ class CameraService : LifecycleService() {
     }
 
     private fun analyze(img: ImageProxy) {
+        if (!motionOn) { prev = null; hits = 0; return }
         val now = System.currentTimeMillis()
         if (now - lastFrame < 250) return
         lastFrame = now
@@ -218,6 +227,12 @@ class CameraService : LifecycleService() {
             "call" -> beginLive(sid, m.optBoolean("ses", true) && micOk)
             "answer" -> if (sid == liveSid) live?.onAnswer(m.optString("sdp"))
             "bye" -> if (sid == liveSid) live?.end("izleyici kapattı")
+            "motion" -> {
+                val on = m.optBoolean("on", true)
+                val p = Prefs.p(this)
+                if (p.getBoolean("hareket", true) == on) announceMotion(on)
+                else p.edit().putBoolean("hareket", on).apply()
+            }
         }
     }
 
@@ -252,14 +267,35 @@ class CameraService : LifecycleService() {
         main.postDelayed({ if (running && live == null) startCamera() }, 600)
     }
 
+    private fun statusNotif(isLive: Boolean) = when {
+        isLive -> Notif.status(this, "Canlı izleniyor", "Diğer telefon şu an kamerayı izliyor.")
+        motionOn -> Notif.status(this, "Kamera izliyor", "Hareket olursa diğer telefona haber verilecek.")
+        else -> Notif.status(this, "Kamera açık", "Hareket algılama kapalı. Canlı izleme kullanılabilir.")
+    }
+
     private fun showNotif(isLive: Boolean) {
-        val n = if (isLive) Notif.status(this, "Canlı izleniyor", "Diğer telefon şu an kamerayı izliyor. Hareket algılama yayın bitince sürer.")
-        else Notif.status(this, "Kamera izliyor", "Hareket olursa diğer telefona haber verilecek.")
-        try { getSystemService(NotificationManager::class.java).notify(1, n) } catch (e: Exception) { }
+        try { getSystemService(NotificationManager::class.java).notify(1, statusNotif(isLive)) } catch (e: Exception) { }
+    }
+
+    private fun applyMotion(on: Boolean) {
+        if (!running || on == motionOn) return
+        motionOn = on
+        prev = null
+        hits = 0
+        if (on) armedAt = System.currentTimeMillis() + ARM_DELAY
+        showNotif(live != null)
+        announceMotion(on)
+    }
+
+    private fun announceMotion(on: Boolean) {
+        val t = topic
+        if (t.isEmpty()) return
+        netExec.execute { try { Ntfy.postText(t, if (on) "motion_on" else "motion_off") } catch (e: Exception) { } }
     }
 
     override fun onDestroy() {
         running = false
+        Prefs.p(this).unregisterOnSharedPreferenceChangeListener(prefListener)
         sig?.stop()
         sig = null
         live?.end("kamera kapandı")

@@ -93,6 +93,8 @@ import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.UUID
+import org.json.JSONObject
 import kotlin.math.roundToInt
 
 private const val ROLE_CAM = "kamera"
@@ -127,6 +129,11 @@ fun HomeScreen() {
         ctx.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)
     }
     val lastTime = remember(tick) { p.getLong("lastTime", 0L) }
+    var motion by remember { mutableStateOf(p.getBoolean("hareket", true)) }
+    LaunchedEffect(tick) { motion = p.getBoolean("hareket", true) }
+    val camMotion = remember(tick) { p.getBoolean("camMotion", true) }
+    val pendingSince = remember(tick) { p.getLong("camMotionPending", 0L) }
+    val pendingAge = System.currentTimeMillis() - pendingSince
 
     var afterPerms by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -203,6 +210,17 @@ fun HomeScreen() {
                 .setOrientationLocked(false)
         )
     }
+    fun setRemoteMotion(on: Boolean) {
+        p.edit().putBoolean("camMotion", on).putLong("camMotionPending", System.currentTimeMillis()).apply()
+        tick++
+        Signal.send(
+            Pairing.camInbox(code), code,
+            JSONObject().put("t", "motion").put("sid", UUID.randomUUID().toString().take(8)).put("on", on)
+        ) {
+            p.edit().putBoolean("camMotion", !on).putLong("camMotionPending", 0L).apply()
+            say("Kameraya iletilemedi. İnternet bağlantını kontrol et.")
+        }
+    }
     fun pickRole(r: String?) {
         if (r == null) {
             ctx.stopService(Intent(ctx, CameraService::class.java))
@@ -222,6 +240,12 @@ fun HomeScreen() {
             when (role) {
                 ROLE_CAM -> CameraHome(
                     camOn = camOn, code = code, sens = sens, shareAudio = shareAudio, batteryOk = batteryOk,
+                    motion = motion,
+                    onMotion = {
+                        motion = it
+                        p.edit().putBoolean("hareket", it).apply()
+                        if (camOn) say(if (it) "Hareket algılama 30 saniye sonra başlıyor." else "Hareket algılama kapatıldı.")
+                    },
                     onToggle = { if (camOn) ctx.stopService(Intent(ctx, CameraService::class.java)) else startCam() },
                     onNewCode = { confirmNew = true },
                     onSens = { sens = it },
@@ -239,6 +263,15 @@ fun HomeScreen() {
                 )
                 ROLE_WATCH -> WatcherHome(
                     paired = paired, watchOn = watchOn, code = code, lastTime = lastTime, batteryOk = batteryOk,
+                    camMotion = camMotion,
+                    motionStatus = when {
+                        pendingSince > 0 && pendingAge < 30_000 -> "Evdeki kameraya iletiliyor…"
+                        pendingSince > 0 && !watchOn -> "İletildi. Onayı görmek için uyarıları aç."
+                        pendingSince > 0 -> "Kamera yanıt vermedi. Kamera telefonu kapalı olabilir."
+                        camMotion -> "Açık. Evde hareket olunca bildirim gelir."
+                        else -> "Kapalı. Kamera yalnızca canlı izleme için açık."
+                    },
+                    onMotion = { setRemoteMotion(it) },
                     onScan = { scan() },
                     onManual = { manualOpen = true },
                     onLive = { ctx.startActivity(Intent(ctx, LiveActivity::class.java)) },
@@ -445,14 +478,22 @@ private fun BatteryRow(ok: Boolean, onFix: () -> Unit) {
 @Composable
 private fun CameraHome(
     camOn: Boolean, code: String, sens: Float, shareAudio: Boolean, batteryOk: Boolean,
+    motion: Boolean, onMotion: (Boolean) -> Unit,
     onToggle: () -> Unit, onNewCode: () -> Unit, onSens: (Float) -> Unit, onSensDone: () -> Unit,
     onAudio: (Boolean) -> Unit, onBattery: () -> Unit, onChangeRole: () -> Unit
 ) {
     StatusCard(
         on = camOn,
-        title = if (camOn) "İzliyor" else "Kamera kapalı",
-        desc = if (camOn) "Hareket olursa izleyici telefona fotoğraflı uyarı gider. İzleyici istediğinde canlı yayın açılır."
-        else "Telefonu odayı görecek şekilde yerleştir ve şarja tak. Başlattıktan sonra evden çıkman için 30 saniyen var.",
+        title = when {
+            !camOn -> "Kamera kapalı"
+            motion -> "İzliyor"
+            else -> "Kamera açık"
+        },
+        desc = when {
+            !camOn -> "Telefonu odayı görecek şekilde yerleştir ve şarja tak. Başlattıktan sonra evden çıkman için 30 saniyen var."
+            motion -> "Hareket olursa izleyici telefona fotoğraflı uyarı gider. İzleyici istediğinde canlı yayın açılır."
+            else -> "Hareket algılama kapalı, uyarı gönderilmez. İzleyici istediğinde canlı yayın yine açılır."
+        },
         action = if (camOn) "Durdur" else "İzlemeyi başlat",
         onAction = onToggle
     )
@@ -482,6 +523,11 @@ private fun CameraHome(
     }
 
     Section("Ayarlar") {
+        SettingRow(
+            "Hareket algılama",
+            if (motion) "Hareket olunca izleyici telefona uyarı gider." else "Kapalı. Kamera yalnızca canlı izleme için açık kalır."
+        ) { Switch(checked = motion, onCheckedChange = onMotion) }
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
         SettingRow("Hassasiyet", "Kedi ya da perde yüzünden boşuna uyarı geliyorsa düşür.") {
             Text("${sens.roundToInt()} / 10", style = MaterialTheme.typography.titleMedium)
         }
@@ -508,6 +554,7 @@ private fun CameraHome(
 @Composable
 private fun WatcherHome(
     paired: Boolean, watchOn: Boolean, code: String, lastTime: Long, batteryOk: Boolean,
+    camMotion: Boolean, motionStatus: String, onMotion: (Boolean) -> Unit,
     onScan: () -> Unit, onManual: () -> Unit, onLive: () -> Unit, onToggle: () -> Unit,
     onBattery: () -> Unit, onChangeRole: () -> Unit
 ) {
@@ -563,6 +610,18 @@ private fun WatcherHome(
         action = if (watchOn) "Kapat" else "Uyarıları aç",
         onAction = onToggle
     )
+
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+        Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Hareket algılama", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(2.dp))
+                Text(motionStatus, style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(checked = camMotion, onCheckedChange = onMotion)
+        }
+    }
 
     Section("Son hareket") {
         if (lastTime > 0) {

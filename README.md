@@ -23,4 +23,4 @@ Bildirimler ücretsiz ntfy.sh sunucusu üzerinden gider. Konu adı ve şifreleme
 
 ## Güncelleme
 
-Her derleme farklı bir imzayla çıkar. Yeni sürümü kurmadan önce eskisini kaldır.
+2.1 ve sonraki sürümler sabit bir imzayla derlenir; yeni sürüm eskisinin üstüne kurulur. (İmza anahtarı deponun gizli ayarlarında, KEYSTORE_B64 ve KEYSTORE_PASSWORD olarak durur.)

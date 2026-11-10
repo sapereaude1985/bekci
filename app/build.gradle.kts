@@ -11,8 +11,8 @@ android {
         applicationId = "com.bekci.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "2.0"
+        versionCode = 4
+        versionName = "2.1"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
     compileOptions {
@@ -20,6 +20,21 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    val ksFile = rootProject.file("bekci.jks")
+    val ksPass = System.getenv("KEYSTORE_PASSWORD")
+    if (ksFile.exists() && !ksPass.isNullOrEmpty()) {
+        signingConfigs {
+            create("sabit") {
+                storeFile = ksFile
+                storePassword = ksPass
+                keyAlias = "bekci"
+                keyPassword = ksPass
+            }
+        }
+        buildTypes {
+            getByName("debug") { signingConfig = signingConfigs.getByName("sabit") }
+        }
+    }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
