@@ -1,11 +1,17 @@
 package com.bekci.app
 
+import android.Manifest
+import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
+import org.json.JSONObject
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -48,13 +54,31 @@ class CameraService : LifecycleService() {
     private var topic = ""
     private var wake: PowerManager.WakeLock? = null
 
+    private val main = Handler(Looper.getMainLooper())
+    private var provider: ProcessCameraProvider? = null
+    private var sig: SignalChannel? = null
+    private var live: CamLive? = null
+    private var liveSid = ""
+    private var micOk = false
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         Notif.channels(this)
         val n = Notif.status(this, "Kamera izliyor", "Hareket olursa diğer telefona haber verilecek.")
+        if (!started) {
+            micOk = Prefs.p(this).getBoolean("ses", true) &&
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        }
         try {
             if (Build.VERSION.SDK_INT >= 30) {
-                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+                var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                if (micOk) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                try {
+                    startForeground(1, n, type)
+                } catch (e: Exception) {
+                    micOk = false
+                    startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+                }
             } else {
                 startForeground(1, n)
             }
@@ -80,6 +104,8 @@ class CameraService : LifecycleService() {
                 acquire(24 * 60 * 60 * 1000L)
             }
             startCamera()
+            sig = SignalChannel(Pairing.camInbox(c), c, onOpen = {}, onMsg = { m -> main.post { onSignal(m) } })
+                .also { it.start() }
             val t = topic
             netExec.execute {
                 try { Ntfy.postText(t, "start") } catch (e: Exception) { }
@@ -92,7 +118,9 @@ class CameraService : LifecycleService() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             try {
+                if (!running || live != null) return@addListener
                 val provider = future.get()
+                this.provider = provider
                 val analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
@@ -180,8 +208,62 @@ class CameraService : LifecycleService() {
         try { Ntfy.postText(topic, "h") } catch (e: Exception) { }
     }
 
+    // ---------- live view ----------
+
+    private fun onSignal(m: JSONObject) {
+        if (!running) return
+        val sid = m.optString("sid")
+        if (sid.isEmpty()) return
+        when (m.optString("t")) {
+            "call" -> beginLive(sid, m.optBoolean("ses", true) && micOk)
+            "answer" -> if (sid == liveSid) live?.onAnswer(m.optString("sdp"))
+            "bye" -> if (sid == liveSid) live?.end("izleyici kapattı")
+        }
+    }
+
+    private fun beginLive(sid: String, audio: Boolean) {
+        if (sid == liveSid) return
+        live?.end("yeni istek")
+        liveSid = sid
+        try { provider?.unbindAll() } catch (e: Exception) { }
+        prev = null
+        hits = 0
+        showNotif(true)
+        val l = CamLive(
+            this, sid, audio,
+            sendSig = { j -> Signal.send(Pairing.watchInbox(code), code, j) },
+            onEnd = { reason -> main.post { liveEnded(sid, reason) } }
+        )
+        live = l
+        main.postDelayed({ if (live === l) l.start() }, 800)
+    }
+
+    private fun liveEnded(sid: String, reason: String) {
+        if (sid != liveSid) return
+        live = null
+        liveSid = ""
+        if (reason != "izleyici kapattı") {
+            Signal.send(Pairing.watchInbox(code), code, JSONObject().put("t", "bye").put("sid", sid).put("msg", reason))
+        }
+        if (!running) return
+        showNotif(false)
+        prev = null
+        armedAt = max(armedAt, System.currentTimeMillis() + 5000L)
+        main.postDelayed({ if (running && live == null) startCamera() }, 600)
+    }
+
+    private fun showNotif(isLive: Boolean) {
+        val n = if (isLive) Notif.status(this, "Canlı izleniyor", "Diğer telefon şu an kamerayı izliyor. Hareket algılama yayın bitince sürer.")
+        else Notif.status(this, "Kamera izliyor", "Hareket olursa diğer telefona haber verilecek.")
+        try { getSystemService(NotificationManager::class.java).notify(1, n) } catch (e: Exception) { }
+    }
+
     override fun onDestroy() {
         running = false
+        sig?.stop()
+        sig = null
+        live?.end("kamera kapandı")
+        live = null
         val t = topic
         if (t.isNotEmpty()) Thread { try { Ntfy.postText(t, "stop") } catch (e: Exception) { } }.start()
         try { wake?.let { if (it.isHeld) it.release() } } catch (e: Exception) { }

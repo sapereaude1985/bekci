@@ -17,6 +17,11 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import android.graphics.Color
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -51,6 +56,9 @@ object Pairing {
 
     private fun sha(s: String): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
+
+    fun camInbox(code: String): String = topic(code) + "_k"
+    fun watchInbox(code: String): String = topic(code) + "_i"
 
     fun topic(code: String): String =
         "bekci_" + sha("topic:" + normalize(code)).take(16).joinToString("") { "%02x".format(it) }
@@ -185,3 +193,18 @@ object Notif {
 
 fun fmtTime(ms: Long): String =
     SimpleDateFormat("d MMMM HH:mm:ss", Locale("tr", "TR")).format(Date(ms))
+
+const val QR_PREFIX = "bekci:"
+
+fun qrBitmap(text: String, size: Int): Bitmap {
+    val hints = mapOf(
+        EncodeHintType.MARGIN to 0,
+        EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M
+    )
+    val m = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, hints)
+    val px = IntArray(size * size)
+    for (y in 0 until size) for (x in 0 until size) {
+        px[y * size + x] = if (m.get(x, y)) Color.BLACK else Color.WHITE
+    }
+    return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
+}

@@ -1,6 +1,6 @@
 # Bekçi
 
-Eski bir Android telefonu ev kamerasına çevirir. Hareket olunca yanındaki telefona fotoğraflı bildirim gelir. Aynı uygulama iki telefona da kurulur.
+Eski bir Android telefonu ev kamerasına çevirir. Hareket olunca yanındaki telefona fotoğraflı bildirim gelir; istediğinde evi canlı izler, ortam sesini dinlersin. Aynı uygulama iki telefona da kurulur.
 
 ## GitHub’da derleme
 
