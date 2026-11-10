@@ -346,20 +346,10 @@ class LiveActivity : ComponentActivity() {
     }
 
     private fun saveBitmap(b: Bitmap) {
-        try {
-            val name = "bekci-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date()) + ".jpg"
-            val v = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, name)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                if (Build.VERSION.SDK_INT >= 29) put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Bekçi")
-            }
-            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v)
-                ?: throw IllegalStateException()
-            contentResolver.openOutputStream(uri)?.use { b.compress(Bitmap.CompressFormat.JPEG, 92, it) }
-            toast("Fotoğraf galeriye kaydedildi.")
-        } catch (e: Exception) {
-            toast("Fotoğraf kaydedilemedi.")
-        }
+        val out = java.io.ByteArrayOutputStream()
+        b.compress(Bitmap.CompressFormat.JPEG, 92, out)
+        if (Gallery.save(this, out.toByteArray(), Gallery.LIVE)) toast("Galeride Bekçi › Canlı klasörüne kaydedildi.")
+        else toast("Fotoğraf kaydedilemedi.")
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()

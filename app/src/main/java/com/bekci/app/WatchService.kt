@@ -111,6 +111,7 @@ class WatchService : Service() {
             try {
                 val jpg = Pairing.decrypt(code, Ntfy.download(att.getString("url")))
                 File(filesDir, "last.jpg").writeBytes(jpg)
+                if (Prefs.p(this).getBoolean("galeri", true)) Gallery.save(this, jpg, Gallery.MOTION, time)
                 bmp = BitmapFactory.decodeByteArray(jpg, 0, jpg.size)
             } catch (e: Exception) { }
         }

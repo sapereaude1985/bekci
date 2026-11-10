@@ -18,6 +18,15 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import android.graphics.Color
+import android.content.ContentUris
+import android.content.ContentValues
+import android.graphics.BitmapFactory
+import android.media.MediaScannerConnection
+import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Size
+import java.io.File
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
@@ -242,4 +251,67 @@ fun qrBitmap(text: String, size: Int): Bitmap {
         px[y * size + x] = if (m.get(x, y)) Color.BLACK else Color.WHITE
     }
     return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888)
+}
+
+/** Photos go to the phone's gallery under Pictures/Bekçi/<Hareket|Canlı>. */
+object Gallery {
+    const val ROOT = "Bekçi"
+    const val MOTION = "Hareket"
+    const val LIVE = "Canlı"
+
+    fun save(ctx: Context, jpeg: ByteArray, sub: String, time: Long = System.currentTimeMillis()): Boolean {
+        val name = "bekci-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date(time)) + ".jpg"
+        return try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val v = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/$ROOT/$sub")
+                    put(MediaStore.Images.Media.DATE_TAKEN, time)
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val r = ctx.contentResolver
+                val uri = r.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v) ?: return false
+                r.openOutputStream(uri)?.use { it.write(jpeg) } ?: return false
+                r.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+            } else {
+                if (ctx.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) return false
+                @Suppress("DEPRECATION")
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "$ROOT/$sub")
+                dir.mkdirs()
+                val f = File(dir, name)
+                f.writeBytes(jpeg)
+                MediaScannerConnection.scanFile(ctx, arrayOf(f.path), arrayOf("image/jpeg"), null)
+            }
+            Prefs.p(ctx).edit().putLong("photoSaved", System.currentTimeMillis()).apply()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun recent(ctx: Context, limit: Int): List<Uri> {
+        val col = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val out = ArrayList<Uri>()
+        @Suppress("DEPRECATION")
+        val sel = if (Build.VERSION.SDK_INT >= 29) "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
+        else "${MediaStore.Images.Media.DATA} LIKE ?"
+        val arg = if (Build.VERSION.SDK_INT >= 29) "Pictures/$ROOT/%" else "%/Pictures/$ROOT/%"
+        try {
+            ctx.contentResolver.query(
+                col, arrayOf(MediaStore.Images.Media._ID), sel, arrayOf(arg),
+                "${MediaStore.Images.Media.DATE_ADDED} DESC"
+            )?.use { c ->
+                while (c.moveToNext() && out.size < limit) out += ContentUris.withAppendedId(col, c.getLong(0))
+            }
+        } catch (e: Exception) { }
+        return out
+    }
+
+    fun thumb(ctx: Context, uri: Uri): Bitmap? = try {
+        if (Build.VERSION.SDK_INT >= 29) ctx.contentResolver.loadThumbnail(uri, Size(360, 360), null)
+        else ctx.contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = 4 })
+        }
+    } catch (e: Exception) { null }
 }

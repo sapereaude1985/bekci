@@ -96,6 +96,11 @@ import androidx.compose.material3.CircularProgressIndicator
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.graphics.ImageBitmap
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.UUID
@@ -139,6 +144,23 @@ fun HomeScreen() {
     val camMotion = remember(tick) { p.getBoolean("camMotion", true) }
     val pendingSince = remember(tick) { p.getLong("camMotionPending", 0L) }
     val pendingAge = System.currentTimeMillis() - pendingSince
+
+    var saveGallery by remember { mutableStateOf(p.getBoolean("galeri", true)) }
+    var photos by remember { mutableStateOf<List<Pair<Uri, ImageBitmap>>>(emptyList()) }
+    val photoKey = remember(tick) { p.getLong("photoSaved", 0L) }
+    LaunchedEffect(photoKey, role) {
+        if (role == ROLE_WATCH) photos = withContext(Dispatchers.IO) {
+            Gallery.recent(ctx, 9).mapNotNull { u -> Gallery.thumb(ctx, u)?.let { u to it.asImageBitmap() } }
+        }
+    }
+    fun openPhoto(u: Uri) {
+        try {
+            ctx.startActivity(
+                Intent(Intent.ACTION_VIEW).setDataAndType(u, "image/jpeg")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (e: Exception) { say("Fotoğrafı açacak bir uygulama bulunamadı.") }
+    }
 
     var fenceOn by remember { mutableStateOf(p.getBoolean("evHatirlat", false)) }
     var fenceBusy by remember { mutableStateOf(false) }
@@ -340,6 +362,21 @@ fun HomeScreen() {
                     onFence = { if (it) askHome = true else stopFence() },
                     onUpdateHome = { askHome = true },
                     onPin = { pinShortcut() },
+                    photos = photos, onOpenPhoto = { openPhoto(it) },
+                    saveGallery = saveGallery,
+                    onSaveGallery = {
+                        if (it && Build.VERSION.SDK_INT < 29 && !granted(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                            withPerms(listOf(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                                val ok = granted(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                saveGallery = ok
+                                p.edit().putBoolean("galeri", ok).apply()
+                                if (!ok) say("Depolama izni olmadan galeriye kaydedilemez.")
+                            }
+                        } else {
+                            saveGallery = it
+                            p.edit().putBoolean("galeri", it).apply()
+                        }
+                    },
                     onScan = { scan() },
                     onManual = { manualOpen = true },
                     onLive = { ctx.startActivity(Intent(ctx, LiveActivity::class.java)) },
@@ -656,6 +693,8 @@ private fun WatcherHome(
     paired: Boolean, watchOn: Boolean, code: String, lastTime: Long, batteryOk: Boolean,
     camMotion: Boolean, motionStatus: String, onMotion: (Boolean) -> Unit,
     fenceOn: Boolean, fenceBusy: Boolean, onFence: (Boolean) -> Unit, onUpdateHome: () -> Unit, onPin: () -> Unit,
+    photos: List<Pair<Uri, ImageBitmap>>, onOpenPhoto: (Uri) -> Unit,
+    saveGallery: Boolean, onSaveGallery: (Boolean) -> Unit,
     onScan: () -> Unit, onManual: () -> Unit, onLive: () -> Unit, onToggle: () -> Unit,
     onBattery: () -> Unit, onChangeRole: () -> Unit
 ) {
@@ -755,6 +794,36 @@ private fun WatcherHome(
         } else {
             Text("Henüz hareket yok.", style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
         }
+    }
+
+    Section("Fotoğraflar") {
+        Text(
+            "Galeride “Bekçi” klasöründe: hareket fotoğrafları “Hareket”, canlı yayından kaydettiklerin “Canlı” alt klasöründe.",
+            style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+        if (photos.isEmpty()) {
+            Text("Henüz kaydedilmiş fotoğraf yok.", style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
+        } else {
+            photos.chunked(3).forEach { row ->
+                Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { (uri, img) ->
+                        Image(
+                            img, contentDescription = "Kaydedilen fotoğraf",
+                            modifier = Modifier.weight(1f).aspectRatio(1f).clip(RoundedCornerShape(12.dp))
+                                .clickable { onOpenPhoto(uri) },
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+        SettingRow(
+            "Hareket fotoğraflarını kaydet",
+            "Google Fotoğraflar yedeklemesi açıksa bu klasörü de buluta yükleyebilir."
+        ) { Switch(checked = saveGallery, onCheckedChange = onSaveGallery) }
     }
 
     Section("Ayarlar") {
