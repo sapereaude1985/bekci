@@ -1,6 +1,7 @@
 package com.bekci.app
 
 import android.content.Context
+import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
@@ -22,6 +23,8 @@ import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
 import org.webrtc.AudioSource
+import org.webrtc.MediaStreamTrack
+import org.webrtc.RtpTransceiver
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
@@ -241,6 +244,37 @@ class CamLive(
     private var offerSent = false
     private var closed = false
     private var retried = false
+    private var audioSaved = false
+    private var prevMode = AudioManager.MODE_NORMAL
+    private var prevSpeaker = false
+    private var prevVol = -1
+
+    /** Route the watcher's push-to-talk voice to the loudspeaker at full volume. */
+    @Suppress("DEPRECATION")
+    private fun speakerOn() {
+        try {
+            val am = ctx.getSystemService(AudioManager::class.java)
+            prevMode = am.mode
+            prevSpeaker = am.isSpeakerphoneOn
+            prevVol = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+            audioSaved = true
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            am.isSpeakerphoneOn = true
+            am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL), 0)
+        } catch (e: Exception) { }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun speakerRestore() {
+        if (!audioSaved) return
+        audioSaved = false
+        try {
+            val am = ctx.getSystemService(AudioManager::class.java)
+            if (prevVol >= 0) am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, prevVol, 0)
+            am.isSpeakerphoneOn = prevSpeaker
+            am.mode = prevMode
+        } catch (e: Exception) { }
+    }
 
     private val gatherTimeout = Runnable { sendOffer() }
     private val answerTimeout = Runnable { end("izleyici yanıt vermedi") }
@@ -292,7 +326,14 @@ class CamLive(
                 val a = f.createAudioSource(mc)
                 asrc = a
                 p.addTrack(f.createAudioTrack("a0", a), listOf("s0"))
+            } else {
+                // No ambient sound, but keep an audio line open for push-to-talk.
+                p.addTransceiver(
+                    MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
+                    RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY)
+                )
             }
+            speakerOn()
             p.createOffer(object : Sdp() {
                 override fun onCreateSuccess(d: SessionDescription?) {
                     if (d == null) { main.post { end("teklif oluşturulamadı") }; return }
@@ -325,7 +366,7 @@ class CamLive(
         val d = pc?.localDescription ?: return
         offerSent = true
         main.removeCallbacks(gatherTimeout)
-        sendSig(JSONObject().put("t", "offer").put("sid", sid).put("sdp", d.description).put("ses", audio))
+        sendSig(JSONObject().put("t", "offer").put("sid", sid).put("sdp", d.description).put("ses", audio).put("ptt", true))
         main.postDelayed(answerTimeout, 40_000)
     }
 
@@ -363,6 +404,7 @@ class CamLive(
         try { asrc?.dispose() } catch (e: Exception) { }
         try { helper?.dispose() } catch (e: Exception) { }
         vsrc = null; asrc = null; helper = null
+        speakerRestore()
         onEnd(reason)
     }
 }

@@ -18,6 +18,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,6 +66,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 import org.webrtc.AudioTrack
+import org.webrtc.AudioSource
+import org.webrtc.MediaStreamTrack
 import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
 import org.webrtc.RendererCommon
@@ -96,6 +101,11 @@ class LiveActivity : ComponentActivity() {
     private val muted = mutableStateOf(false)
     private val hasAudio = mutableStateOf(false)
     private val liveSince = mutableLongStateOf(0L)
+    private val canTalk = mutableStateOf(false)
+    private val talking = mutableStateOf(false)
+    private var micSrc: AudioSource? = null
+    private var micTrack: AudioTrack? = null
+    private val micPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { connect() }
 
     private val offerTimeout = Runnable {
         fail("Kamera yanıt vermedi. Evdeki telefonda Bekçi’nin kamera olarak çalıştığından emin ol.")
@@ -146,11 +156,15 @@ class LiveActivity : ComponentActivity() {
                     onBack = { finish() },
                     onMute = { toggleMute() },
                     onSnap = { snapshot() },
-                    onRetry = { connect() }
+                    onRetry = { connect() },
+                    canTalk = canTalk.value,
+                    talking = talking.value,
+                    onTalk = { setTalking(it) }
                 )
             }
         }
-        connect()
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) connect()
+        else micPerm.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     private fun connect() {
@@ -183,7 +197,7 @@ class LiveActivity : ComponentActivity() {
                 main.removeCallbacks(offerTimeout)
                 message.value = "Görüntü açılıyor…"
                 hasAudio.value = m.optBoolean("ses", false)
-                answer(m.optString("sdp"))
+                answer(m.optString("sdp"), m.optBoolean("ptt", false))
             }
             "bye" -> {
                 val why = m.optString("msg")
@@ -193,7 +207,16 @@ class LiveActivity : ComponentActivity() {
         }
     }
 
-    private fun answer(sdp: String) {
+    private fun answer(sdp: String, ptt: Boolean) {
+        val mic: AudioTrack? =
+            if (ptt && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                try {
+                    val s = Rtc.factory.createAudioSource(MediaConstraints())
+                    micSrc = s
+                    Rtc.factory.createAudioTrack("w0", s).also { it.setEnabled(false) }
+                } catch (e: Exception) { null }
+            } else null
+        micTrack = mic
         val p = Rtc.factory.createPeerConnection(Rtc.config(), object : PcObserver() {
             override fun onTrack(transceiver: RtpTransceiver?) {
                 val tr = transceiver?.receiver?.track() ?: return
@@ -213,6 +236,14 @@ class LiveActivity : ComponentActivity() {
         pc = p
         p.setRemoteDescription(object : Sdp() {
             override fun onSetSuccess() {
+                if (mic != null) {
+                    val t = p.transceivers.firstOrNull { it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO }
+                    if (t != null) {
+                        t.sender.setTrack(mic, false)
+                        t.setDirection(org.webrtc.RtpTransceiver.RtpTransceiverDirection.SEND_RECV)
+                        main.post { canTalk.value = true }
+                    }
+                }
                 p.createAnswer(object : Sdp() {
                     override fun onCreateSuccess(d: SessionDescription?) {
                         if (d == null) return
@@ -276,13 +307,28 @@ class LiveActivity : ComponentActivity() {
             Signal.send(Pairing.camInbox(code), code, JSONObject().put("t", "bye").put("sid", sid))
         }
         remoteAudio = null
+        talking.value = false
+        canTalk.value = false
         try { pc?.dispose() } catch (e: Exception) { }
         pc = null
+        try { micTrack?.dispose() } catch (e: Exception) { }
+        try { micSrc?.dispose() } catch (e: Exception) { }
+        micTrack = null
+        micSrc = null
     }
 
     private fun toggleMute() {
         muted.value = !muted.value
-        remoteAudio?.setEnabled(!muted.value)
+        if (!talking.value) remoteAudio?.setEnabled(!muted.value)
+    }
+
+    /** Walkie-talkie: while talking, the home sound is muted here so you don't hear yourself back. */
+    private fun setTalking(on: Boolean) {
+        val t = micTrack ?: return
+        if (talking.value == on) return
+        talking.value = on
+        t.setEnabled(on)
+        remoteAudio?.setEnabled(!on && !muted.value)
     }
 
     private fun snapshot() {
@@ -342,7 +388,10 @@ private fun LiveScreen(
     onBack: () -> Unit,
     onMute: () -> Unit,
     onSnap: () -> Unit,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    canTalk: Boolean,
+    talking: Boolean,
+    onTalk: (Boolean) -> Unit
 ) {
     val glass = Color.Black.copy(alpha = 0.45f)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -358,6 +407,17 @@ private fun LiveScreen(
             ) { Icon(Icons.Default.ArrowBack, contentDescription = "Geri") }
             Spacer(Modifier.weight(1f))
             if (phase == LiveActivity.Phase.Live) LiveBadge(liveSince)
+        }
+
+        if (talking) {
+            Row(
+                Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 72.dp)
+                    .clip(RoundedCornerShape(50)).background(Color(0xFFE5484D))
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("🎙  Konuşuyorsun, evde duyuluyor", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            }
         }
 
         if (phase != LiveActivity.Phase.Live) {
@@ -380,10 +440,11 @@ private fun LiveScreen(
         if (phase == LiveActivity.Phase.Live) {
             Row(
                 Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 28.dp),
-                horizontalArrangement = Arrangement.spacedBy(28.dp),
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
                 verticalAlignment = Alignment.Top
             ) {
                 if (hasAudio) RoundAction(if (muted) "🔇" else "🔊", if (muted) "Sesi aç" else "Sessiz", glass, onMute)
+                if (canTalk) TalkButton(talking, onTalk)
                 RoundAction("📸", "Kaydet", glass, onSnap)
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     FilledIconButton(
@@ -430,5 +491,26 @@ private fun LiveBadge(since: Long) {
             "CANLI  " + "%02d:%02d".format(s / 60, s % 60),
             color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp
         )
+    }
+}
+
+@Composable
+private fun TalkButton(talking: Boolean, onTalk: (Boolean) -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(80.dp)
+                .clip(CircleShape)
+                .background(if (talking) Color(0xFFE5484D) else Color.White)
+                .border(4.dp, if (talking) Color.White.copy(alpha = 0.8f) else Color.Transparent, CircleShape)
+                .pointerInput(Unit) {
+                    detectTapGestures(onPress = {
+                        onTalk(true)
+                        try { tryAwaitRelease() } finally { onTalk(false) }
+                    })
+                },
+            contentAlignment = Alignment.Center
+        ) { Text("🎙", fontSize = 32.sp) }
+        Spacer(Modifier.height(6.dp))
+        Text(if (talking) "Bırak" else "Bas konuş", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
