@@ -20,10 +20,13 @@ class WatchService : Service() {
 
     companion object {
         @Volatile var running = false
+        const val OFFLINE_MS = 12 * 60_000L
     }
 
     @Volatile private var conn: HttpURLConnection? = null
     private var thread: Thread? = null
+    private var checker: Thread? = null
+    @Volatile private var lastLine = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -49,6 +52,7 @@ class WatchService : Service() {
             running = true
             val topic = Pairing.topic(code)
             thread = Thread { loop(topic, code) }.also { it.start() }
+            checker = Thread { checkLoop() }.also { it.isDaemon = true; it.start() }
         }
         return START_STICKY
     }
@@ -67,6 +71,7 @@ class WatchService : Service() {
                     backoff = 2000L
                     while (running) {
                         val line = r.readLine() ?: break
+                        lastLine = System.currentTimeMillis()
                         handle(line, code)
                     }
                 }
@@ -90,6 +95,8 @@ class WatchService : Service() {
 
         val msg = o.optString("message")
         val att = o.optJSONObject("attachment")
+        seen(time, msg, att == null)
+        if (att == null && msg.startsWith("hb_")) return
         if (att == null && msg.startsWith("sens_")) {
             val v = msg.removePrefix("sens_").toIntOrNull()?.coerceIn(1, 10) ?: return
             Prefs.p(this).edit().putInt("camSens", v).putLong("camSensPending", 0L).apply()
@@ -124,7 +131,59 @@ class WatchService : Service() {
         Notif.alert(this, "Evde hareket var", fmtTime(time), bmp, true)
     }
 
+    // ---------- offline / battery watch ----------
+
+    private fun seen(time: Long, msg: String, text: Boolean) {
+        val p = Prefs.p(this)
+        val e = p.edit()
+        if (time > p.getLong("camLastSeen", 0L)) e.putLong("camLastSeen", time)
+        val recent = System.currentTimeMillis() - time < OFFLINE_MS
+        when {
+            text && msg == "stop" -> e.putBoolean("camRunning", false).putBoolean("camOfflineAlerted", false)
+            else -> e.putBoolean("camRunning", true)
+        }
+        if (text && msg.startsWith("hb_")) {
+            val parts = msg.split("_")
+            val pct = parts.getOrNull(1)?.toIntOrNull() ?: -1
+            val chg = parts.getOrNull(2) == "1"
+            e.putBoolean("camHbSeen", true).putInt("camBattery", pct).putBoolean("camCharging", chg)
+            if (recent) {
+                if (pct in 0..14 && !chg && !p.getBoolean("camLowBatAlerted", false)) {
+                    e.putBoolean("camLowBatAlerted", true)
+                    Notif.alert(this, "Evdeki kameranın pili azaldı (%$pct)", "Şarja takılı değil. Pil biterse kamera çevrimdışı kalır.", null, true)
+                } else if (chg || pct > 25) e.putBoolean("camLowBatAlerted", false)
+            }
+        }
+        if (recent && p.getBoolean("camOfflineAlerted", false) && !(text && msg == "stop")) {
+            e.putBoolean("camOfflineAlerted", false)
+            Notif.alert(this, "Evdeki kamera yeniden çevrimiçi", fmtTime(time), null, false)
+        }
+        e.apply()
+    }
+
+    private fun checkLoop() {
+        while (running) {
+            try { Thread.sleep(60_000L) } catch (e: InterruptedException) { return }
+            if (!running) return
+            val p = Prefs.p(this)
+            val now = System.currentTimeMillis()
+            // Only judge when our own connection is healthy, so our outage isn't blamed on the camera.
+            if (now - lastLine > 150_000L) continue
+            if (!p.getBoolean("camHbSeen", false) || !p.getBoolean("camRunning", false)) continue
+            val last = p.getLong("camLastSeen", 0L)
+            if (last == 0L || now - last < OFFLINE_MS || p.getBoolean("camOfflineAlerted", false)) continue
+            p.edit().putBoolean("camOfflineAlerted", true).apply()
+            Notif.alert(
+                this, "Evdeki kamera çevrimdışı",
+                "Son sinyal: ${fmtTime(last)}. Telefon kapanmış, interneti gitmiş ya da uygulama durmuş olabilir.",
+                null, true
+            )
+        }
+    }
+
     override fun onDestroy() {
+        checker?.interrupt()
+        checker = null
         running = false
         val c = conn
         if (c != null) Thread { try { c.disconnect() } catch (e: Exception) { } }.start()

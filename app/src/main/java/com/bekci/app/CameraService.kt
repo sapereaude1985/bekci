@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -44,6 +46,7 @@ class CameraService : LifecycleService() {
         private const val GH = 60
         private const val COOLDOWN = 30_000L
         private const val ARM_DELAY = 30_000L
+        private const val HB_EVERY = 5 * 60_000L
     }
 
     private val analysisExec: ExecutorService = Executors.newSingleThreadExecutor()
@@ -76,6 +79,14 @@ class CameraService : LifecycleService() {
     private var flashShotAt = 0L
     private var liveStart = 0L
     private var liveLumaChecked = false
+
+    private val heartbeat = object : Runnable {
+        override fun run() {
+            if (!running) return
+            sendHeartbeat()
+            main.postDelayed(this, HB_EVERY)
+        }
+    }
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
         if (key == "hareket") main.post { applyMotion(sp.getBoolean("hareket", true)) }
         if (key == "sens") main.post { applySens(sp.getInt("sens", 6)) }
@@ -133,6 +144,7 @@ class CameraService : LifecycleService() {
                 try { Ntfy.postText(t, "start") } catch (e: Exception) { }
                 if (!motionOn) try { Ntfy.postText(t, "motion_off") } catch (e: Exception) { }
                 try { Ntfy.postText(t, "sens_" + Prefs.p(this).getInt("sens", 6)) } catch (e: Exception) { }
+                main.postDelayed(heartbeat, 2000L)
             }
         }
         return START_NOT_STICKY
@@ -329,6 +341,21 @@ class CameraService : LifecycleService() {
         else -> Notif.status(this, "Kamera açık", "Hareket algılama kapalı. Canlı izleme kullanılabilir.")
     }
 
+    /** "hb_<battery %>_<1 if charging>": lets the watcher notice when this phone goes quiet. */
+    private fun sendHeartbeat() {
+        val t = topic
+        if (t.isEmpty()) return
+        var pct = -1
+        var charging = false
+        try {
+            pct = getSystemService(BatteryManager::class.java).getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            val st = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            charging = (st?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        } catch (e: Exception) { }
+        val msg = "hb_${pct}_${if (charging) 1 else 0}"
+        netExec.execute { try { Ntfy.postText(t, msg) } catch (e: Exception) { } }
+    }
+
     private fun nightFlash() = Prefs.p(this).getBoolean("geceFlas", true)
 
     private fun hasFlash() = camera?.cameraInfo?.hasFlashUnit() == true
@@ -455,6 +482,7 @@ class CameraService : LifecycleService() {
 
     override fun onDestroy() {
         running = false
+        main.removeCallbacks(heartbeat)
         Prefs.p(this).unregisterOnSharedPreferenceChangeListener(prefListener)
         sig?.stop()
         sig = null

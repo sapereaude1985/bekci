@@ -149,6 +149,7 @@ fun HomeScreen() {
     var sensDragging by remember { mutableStateOf(false) }
     LaunchedEffect(tick) { if (!sensDragging) camSens = p.getInt("camSens", 6).toFloat() }
     val sensPending = remember(tick) { p.getLong("camSensPending", 0L) }
+    val camHealth = remember(tick) { camHealth(p, WatchService.running) }
 
     var saveGallery by remember { mutableStateOf(p.getBoolean("galeri", true)) }
     var photos by remember { mutableStateOf<List<Pair<Uri, ImageBitmap>>>(emptyList()) }
@@ -367,6 +368,7 @@ fun HomeScreen() {
                 ROLE_WATCH -> WatcherHome(
                     paired = paired, watchOn = watchOn, code = code, lastTime = lastTime, batteryOk = batteryOk,
                     camMotion = camMotion,
+                    camHealth = camHealth,
                     motionStatus = when {
                         pendingSince > 0 && pendingAge < 30_000 -> "Evdeki kameraya iletiliyor…"
                         pendingSince > 0 && !watchOn -> "İletildi. Onayı görmek için uyarıları aç."
@@ -724,6 +726,7 @@ private fun CameraHome(
 private fun WatcherHome(
     paired: Boolean, watchOn: Boolean, code: String, lastTime: Long, batteryOk: Boolean,
     camMotion: Boolean, motionStatus: String, onMotion: (Boolean) -> Unit,
+    camHealth: CamHealth,
     camSens: Float, sensStatus: String, onSens: (Float) -> Unit, onSensDone: () -> Unit,
     fenceOn: Boolean, fenceBusy: Boolean, onFence: (Boolean) -> Unit, onUpdateHome: () -> Unit, onPin: () -> Unit,
     photos: List<Pair<Uri, ImageBitmap>>, onOpenPhoto: (Uri) -> Unit,
@@ -775,6 +778,8 @@ private fun WatcherHome(
             }
         }
     }
+
+    HealthCard(camHealth)
 
     StatusCard(
         on = watchOn,
@@ -889,5 +894,60 @@ private fun WatcherHome(
 private fun PinRow(onPin: () -> Unit) {
     SettingRow("Ana ekrana ekle", "Bekçi simgesini ana ekrana koyar.") {
         FilledTonalButton(onClick = onPin) { Text("Ekle") }
+    }
+}
+
+data class CamHealth(val level: Int, val title: String, val detail: String) // level: 0 gri, 1 yeşil, 2 kırmızı, 3 sarı
+
+private fun ago(ms: Long): String {
+    val m = (ms / 60_000L).coerceAtLeast(0)
+    return when {
+        m < 1 -> "az önce"
+        m < 60 -> "$m dk önce"
+        m < 48 * 60 -> "${m / 60} sa önce"
+        else -> "${m / 1440} gün önce"
+    }
+}
+
+private fun camHealth(p: android.content.SharedPreferences, watchOn: Boolean): CamHealth {
+    if (!watchOn) return CamHealth(0, "Durum bilinmiyor", "Evdeki kameranın durumunu görmek için uyarıları aç.")
+    if (!p.getBoolean("camHbSeen", false))
+        return CamHealth(0, "Durum bilgisi bekleniyor", "Evdeki telefonda Bekçi 2.8 veya sonrası çalışınca birkaç dakika içinde görünür.")
+    val last = p.getLong("camLastSeen", 0L)
+    val gap = System.currentTimeMillis() - last
+    if (!p.getBoolean("camRunning", false)) return CamHealth(0, "Kamera kapalı", "Durduruldu · ${ago(gap)}")
+    val pct = p.getInt("camBattery", -1)
+    val chg = p.getBoolean("camCharging", false)
+    val bat = if (pct >= 0) " · Pil %$pct" + (if (chg) ", şarjda" else ", şarjda değil") else ""
+    return when {
+        gap > WatchService.OFFLINE_MS -> CamHealth(2, "Çevrimdışı", "${ago(gap).replace(" önce", "")}dır sinyal yok$bat")
+        pct in 0..20 && !chg -> CamHealth(3, "Çevrimiçi, pil azalıyor", "Son sinyal ${ago(gap)}$bat")
+        else -> CamHealth(1, "Çevrimiçi", "Son sinyal ${ago(gap)}$bat")
+    }
+}
+
+@Composable
+private fun HealthCard(h: CamHealth) {
+    val c = MaterialTheme.colorScheme
+    val dot = when (h.level) {
+        1 -> Color(0xFF2EB67D)
+        2 -> Color(0xFFE5484D)
+        3 -> Color(0xFFF5A524)
+        else -> c.outline
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = if (h.level == 2) CardDefaults.cardColors(containerColor = c.errorContainer, contentColor = c.onErrorContainer)
+        else CardDefaults.cardColors()
+    ) {
+        Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(14.dp).clip(CircleShape).background(dot))
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Evdeki kamera: ${h.title}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(h.detail, style = MaterialTheme.typography.bodyMedium, color = if (h.level == 2) c.onErrorContainer else c.onSurfaceVariant)
+            }
+        }
     }
 }
