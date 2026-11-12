@@ -50,7 +50,7 @@ class CameraService : LifecycleService() {
     private var lastEvent = 0L
     private var lastFrame = 0L
     private var armedAt = 0L
-    private var threshold = 0.03f
+    @Volatile private var threshold = 0.03f
     private var code = ""
     private var topic = ""
     private var wake: PowerManager.WakeLock? = null
@@ -64,6 +64,7 @@ class CameraService : LifecycleService() {
     @Volatile private var motionOn = true
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
         if (key == "hareket") main.post { applyMotion(sp.getBoolean("hareket", true)) }
+        if (key == "sens") main.post { applySens(sp.getInt("sens", 6)) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -117,6 +118,7 @@ class CameraService : LifecycleService() {
             netExec.execute {
                 try { Ntfy.postText(t, "start") } catch (e: Exception) { }
                 if (!motionOn) try { Ntfy.postText(t, "motion_off") } catch (e: Exception) { }
+                try { Ntfy.postText(t, "sens_" + Prefs.p(this).getInt("sens", 6)) } catch (e: Exception) { }
             }
         }
         return START_NOT_STICKY
@@ -227,6 +229,12 @@ class CameraService : LifecycleService() {
             "call" -> beginLive(sid, m.optBoolean("ses", true) && micOk)
             "answer" -> if (sid == liveSid) live?.onAnswer(m.optString("sdp"))
             "bye" -> if (sid == liveSid) live?.end("izleyici kapattı")
+            "sens" -> {
+                val v = m.optInt("v", 6).coerceIn(1, 10)
+                val p = Prefs.p(this)
+                if (p.getInt("sens", 6) == v) announceSens(v)
+                else p.edit().putInt("sens", v).apply()
+            }
             "motion" -> {
                 val on = m.optBoolean("on", true)
                 val p = Prefs.p(this)
@@ -285,6 +293,21 @@ class CameraService : LifecycleService() {
         if (on) armedAt = System.currentTimeMillis() + ARM_DELAY
         showNotif(live != null)
         announceMotion(on)
+    }
+
+    /** Applied immediately, no restart needed. */
+    private fun applySens(v: Int) {
+        if (!running) return
+        threshold = THR[(v - 1).coerceIn(0, 9)]
+        prev = null
+        hits = 0
+        announceSens(v)
+    }
+
+    private fun announceSens(v: Int) {
+        val t = topic
+        if (t.isEmpty()) return
+        netExec.execute { try { Ntfy.postText(t, "sens_$v") } catch (e: Exception) { } }
     }
 
     private fun announceMotion(on: Boolean) {

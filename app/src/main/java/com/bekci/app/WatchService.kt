@@ -90,6 +90,11 @@ class WatchService : Service() {
 
         val msg = o.optString("message")
         val att = o.optJSONObject("attachment")
+        if (att == null && msg.startsWith("sens_")) {
+            val v = msg.removePrefix("sens_").toIntOrNull()?.coerceIn(1, 10) ?: return
+            Prefs.p(this).edit().putInt("camSens", v).putLong("camSensPending", 0L).apply()
+            return
+        }
         if (att == null && (msg == "motion_on" || msg == "motion_off")) {
             val on = msg == "motion_on"
             Prefs.p(this).edit().putBoolean("camMotion", on).putLong("camMotionPending", 0L).apply()

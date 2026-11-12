@@ -144,6 +144,10 @@ fun HomeScreen() {
     val camMotion = remember(tick) { p.getBoolean("camMotion", true) }
     val pendingSince = remember(tick) { p.getLong("camMotionPending", 0L) }
     val pendingAge = System.currentTimeMillis() - pendingSince
+    var camSens by remember { mutableFloatStateOf(p.getInt("camSens", 6).toFloat()) }
+    var sensDragging by remember { mutableStateOf(false) }
+    LaunchedEffect(tick) { if (!sensDragging) camSens = p.getInt("camSens", 6).toFloat() }
+    val sensPending = remember(tick) { p.getLong("camSensPending", 0L) }
 
     var saveGallery by remember { mutableStateOf(p.getBoolean("galeri", true)) }
     var photos by remember { mutableStateOf<List<Pair<Uri, ImageBitmap>>>(emptyList()) }
@@ -256,6 +260,16 @@ fun HomeScreen() {
             say("Kameraya iletilemedi. İnternet bağlantını kontrol et.")
         }
     }
+    fun sendSens(v: Int) {
+        p.edit().putInt("camSens", v).putLong("camSensPending", System.currentTimeMillis()).apply()
+        Signal.send(
+            Pairing.camInbox(code), code,
+            JSONObject().put("t", "sens").put("sid", UUID.randomUUID().toString().take(8)).put("v", v)
+        ) {
+            p.edit().putLong("camSensPending", 0L).apply()
+            say("Kameraya iletilemedi. İnternet bağlantını kontrol et.")
+        }
+    }
     fun captureAndRegister() {
         fenceBusy = true
         HomeFence.captureHome(ctx) { ok ->
@@ -336,7 +350,7 @@ fun HomeScreen() {
                     onSens = { sens = it },
                     onSensDone = {
                         p.edit().putInt("sens", sens.roundToInt()).apply()
-                        if (camOn) say("Hassasiyet, izlemeyi yeniden başlatınca geçerli olur.")
+                        if (camOn) say("Hassasiyet ${sens.roundToInt()} olarak uygulandı.")
                     },
                     onAudio = {
                         shareAudio = it
@@ -358,6 +372,15 @@ fun HomeScreen() {
                         else -> "Kapalı. Kamera yalnızca canlı izleme için açık."
                     },
                     onMotion = { setRemoteMotion(it) },
+                    camSens = camSens,
+                    sensStatus = when {
+                        sensPending > 0 && System.currentTimeMillis() - sensPending < 30_000 -> "Evdeki kameraya iletiliyor…"
+                        sensPending > 0 && !watchOn -> "İletildi. Onayı görmek için uyarıları aç."
+                        sensPending > 0 -> "Kamera yanıt vermedi. Kamera telefonu kapalı olabilir."
+                        else -> "Kamera şu an bu ayarla çalışıyor."
+                    },
+                    onSens = { sensDragging = true; camSens = it },
+                    onSensDone = { sensDragging = false; sendSens(camSens.roundToInt()) },
                     fenceOn = fenceOn, fenceBusy = fenceBusy,
                     onFence = { if (it) askHome = true else stopFence() },
                     onUpdateHome = { askHome = true },
@@ -692,6 +715,7 @@ private fun CameraHome(
 private fun WatcherHome(
     paired: Boolean, watchOn: Boolean, code: String, lastTime: Long, batteryOk: Boolean,
     camMotion: Boolean, motionStatus: String, onMotion: (Boolean) -> Unit,
+    camSens: Float, sensStatus: String, onSens: (Float) -> Unit, onSensDone: () -> Unit,
     fenceOn: Boolean, fenceBusy: Boolean, onFence: (Boolean) -> Unit, onUpdateHome: () -> Unit, onPin: () -> Unit,
     photos: List<Pair<Uri, ImageBitmap>>, onOpenPhoto: (Uri) -> Unit,
     saveGallery: Boolean, onSaveGallery: (Boolean) -> Unit,
@@ -760,6 +784,22 @@ private fun WatcherHome(
             }
             Spacer(Modifier.width(12.dp))
             Switch(checked = camMotion, onCheckedChange = onMotion)
+        }
+        if (camMotion) {
+            HorizontalDivider(Modifier.padding(horizontal = 20.dp))
+            Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Hassasiyet", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    Text("${camSens.roundToInt()} / 10", style = MaterialTheme.typography.titleMedium)
+                }
+                Slider(value = camSens, onValueChange = onSens, onValueChangeFinished = onSensDone, valueRange = 1f..10f, steps = 8)
+                Text(
+                    "Az ← boşuna uyarı geliyorsa düşür · hareket kaçıyorsa yükselt → Çok",
+                    style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(sensStatus, style = MaterialTheme.typography.bodySmall, color = c.primary)
+            }
         }
     }
 
