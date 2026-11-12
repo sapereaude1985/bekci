@@ -128,6 +128,7 @@ fun HomeScreen() {
     var paired by remember { mutableStateOf(p.getBoolean("paired", false)) }
     var sens by remember { mutableFloatStateOf(p.getInt("sens", 6).toFloat()) }
     var shareAudio by remember { mutableStateOf(p.getBoolean("ses", true)) }
+    var nightFlash by remember { mutableStateOf(p.getBoolean("geceFlas", true)) }
     var manualOpen by remember { mutableStateOf(false) }
     var confirmNew by remember { mutableStateOf(false) }
 
@@ -340,6 +341,8 @@ fun HomeScreen() {
                 ROLE_CAM -> CameraHome(
                     camOn = camOn, code = code, sens = sens, shareAudio = shareAudio, batteryOk = batteryOk,
                     motion = motion,
+                    nightFlash = nightFlash,
+                    onNightFlash = { nightFlash = it; p.edit().putBoolean("geceFlas", it).apply() },
                     onMotion = {
                         motion = it
                         p.edit().putBoolean("hareket", it).apply()
@@ -637,6 +640,7 @@ private fun BatteryRow(ok: Boolean, onFix: () -> Unit) {
 private fun CameraHome(
     camOn: Boolean, code: String, sens: Float, shareAudio: Boolean, batteryOk: Boolean,
     motion: Boolean, onMotion: (Boolean) -> Unit,
+    nightFlash: Boolean, onNightFlash: (Boolean) -> Unit,
     onToggle: () -> Unit, onNewCode: () -> Unit, onSens: (Float) -> Unit, onSensDone: () -> Unit,
     onAudio: (Boolean) -> Unit, onBattery: () -> Unit, onPin: () -> Unit, onChangeRole: () -> Unit
 ) {
@@ -693,6 +697,11 @@ private fun CameraHome(
             value = sens, onValueChange = onSens, onValueChangeFinished = onSensDone,
             valueRange = 1f..10f, steps = 8
         )
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+        SettingRow(
+            "Karanlıkta flaş",
+            "Ortam karanlıksa hareket fotoğrafı çekilirken flaş yanar, 15 sn hareket olmazsa söner. Canlı yayın karanlıkta açılırsa flaş da yanar."
+        ) { Switch(checked = nightFlash, onCheckedChange = onNightFlash) }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         SettingRow("Canlı yayında ortam sesi", "Mikrofon yalnızca biri canlı izlerken açılır.") {
             Switch(checked = shareAudio, onCheckedChange = onAudio)

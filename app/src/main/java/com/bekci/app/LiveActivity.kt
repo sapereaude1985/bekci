@@ -102,6 +102,8 @@ class LiveActivity : ComponentActivity() {
     private val hasAudio = mutableStateOf(false)
     private val liveSince = mutableLongStateOf(0L)
     private val canTalk = mutableStateOf(false)
+    private val torchAvail = mutableStateOf(false)
+    private val torchOn = mutableStateOf(false)
     private val talking = mutableStateOf(false)
     private var micSrc: AudioSource? = null
     private var micTrack: AudioTrack? = null
@@ -159,7 +161,10 @@ class LiveActivity : ComponentActivity() {
                     onRetry = { connect() },
                     canTalk = canTalk.value,
                     talking = talking.value,
-                    onTalk = { setTalking(it) }
+                    onTalk = { setTalking(it) },
+                    torchAvail = torchAvail.value,
+                    torchOn = torchOn.value,
+                    onTorch = { toggleTorch() }
                 )
             }
         }
@@ -198,6 +203,10 @@ class LiveActivity : ComponentActivity() {
                 message.value = "Görüntü açılıyor…"
                 hasAudio.value = m.optBoolean("ses", false)
                 answer(m.optString("sdp"), m.optBoolean("ptt", false))
+            }
+            "torch" -> {
+                torchAvail.value = !m.optBoolean("yok", false)
+                torchOn.value = m.optBoolean("on", false)
             }
             "bye" -> {
                 val why = m.optString("msg")
@@ -309,12 +318,23 @@ class LiveActivity : ComponentActivity() {
         remoteAudio = null
         talking.value = false
         canTalk.value = false
+        torchAvail.value = false
+        torchOn.value = false
         try { pc?.dispose() } catch (e: Exception) { }
         pc = null
         try { micTrack?.dispose() } catch (e: Exception) { }
         try { micSrc?.dispose() } catch (e: Exception) { }
         micTrack = null
         micSrc = null
+    }
+
+    private fun toggleTorch() {
+        val want = !torchOn.value
+        torchOn.value = want
+        Signal.send(
+            Pairing.camInbox(code), code,
+            JSONObject().put("t", "torch").put("sid", sid).put("on", want)
+        ) { main.post { torchOn.value = !want; toast("Işık komutu gönderilemedi.") } }
     }
 
     private fun toggleMute() {
@@ -381,7 +401,10 @@ private fun LiveScreen(
     onRetry: () -> Unit,
     canTalk: Boolean,
     talking: Boolean,
-    onTalk: (Boolean) -> Unit
+    onTalk: (Boolean) -> Unit,
+    torchAvail: Boolean,
+    torchOn: Boolean,
+    onTorch: () -> Unit
 ) {
     val glass = Color.Black.copy(alpha = 0.45f)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -396,6 +419,17 @@ private fun LiveScreen(
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = glass, contentColor = Color.White)
             ) { Icon(Icons.Default.ArrowBack, contentDescription = "Geri") }
             Spacer(Modifier.weight(1f))
+            if (phase == LiveActivity.Phase.Live && torchAvail) {
+                FilledIconButton(
+                    onClick = onTorch,
+                    modifier = Modifier.size(48.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = if (torchOn) Color(0xFFFFD54F) else glass,
+                        contentColor = if (torchOn) Color.Black else Color.White
+                    )
+                ) { Text("🔦", fontSize = 22.sp) }
+                Spacer(Modifier.width(10.dp))
+            }
             if (phase == LiveActivity.Phase.Live) LiveBadge(liveSince)
         }
 

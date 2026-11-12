@@ -12,6 +12,10 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.util.Size
+import androidx.camera.core.Camera
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import org.json.JSONObject
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -62,6 +66,16 @@ class CameraService : LifecycleService() {
     private var liveSid = ""
     private var micOk = false
     @Volatile private var motionOn = true
+
+    // ---- torch / night ----
+    @Volatile private var camera: Camera? = null
+    @Volatile private var torchOn = false
+    @Volatile private var torchAutoUntil = 0L
+    @Volatile private var settleUntil = 0L
+    @Volatile private var dark = false
+    private var flashShotAt = 0L
+    private var liveStart = 0L
+    private var liveLumaChecked = false
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
         if (key == "hareket") main.post { applyMotion(sp.getBoolean("hareket", true)) }
         if (key == "sens") main.post { applySens(sp.getInt("sens", 6)) }
@@ -139,7 +153,8 @@ class CameraService : LifecycleService() {
                     try { analyze(img) } catch (e: Exception) { } finally { img.close() }
                 }
                 provider.unbindAll()
-                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
+                camera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
+                if (torchOn) camera?.cameraControl?.enableTorch(true)
             } catch (e: Exception) {
                 Notif.alert(this, "Kamera açılamadı", e.message ?: "Bilinmeyen hata", null, false)
                 stopSelf()
@@ -170,9 +185,27 @@ class CameraService : LifecycleService() {
                 cur[y * GW + x] = (r * 77 + g * 150 + b * 29) shr 8
             }
         }
+        var sum = 0
+        for (v in cur) sum += v
+        val avg = sum / cur.size
+        if (!torchOn) { if (avg < 40) dark = true else if (avg > 60) dark = false }
+
+        if (flashShotAt > 0 && now >= flashShotAt) {
+            flashShotAt = 0
+            prev = cur
+            val bmp = img.toBitmap()
+            val rot = img.imageInfo.rotationDegrees
+            netExec.execute { sendAlert(bmp, rot) }
+            return
+        }
+        val until = torchAutoUntil
+        if (torchOn && until > 0 && now > until && flashShotAt == 0L) {
+            main.post { if (torchAutoUntil in 1..System.currentTimeMillis()) setTorch(false) }
+        }
+
         val old = prev
         prev = cur
-        if (old == null || now < armedAt) return
+        if (old == null || now < armedAt || now < settleUntil) return
 
         var changed = 0
         for (i in cur.indices) if (abs(cur[i] - old[i]) > 28) changed++
@@ -180,12 +213,22 @@ class CameraService : LifecycleService() {
 
         if (frac > threshold) {
             hits++
+            if (torchOn && torchAutoUntil > 0) torchAutoUntil = now + 15_000L
             if (hits >= 2 && now - lastEvent > COOLDOWN) {
                 hits = 0
                 lastEvent = now
-                val bmp = img.toBitmap()
-                val rot = img.imageInfo.rotationDegrees
-                netExec.execute { sendAlert(bmp, rot) }
+                if (dark && !torchOn && nightFlash() && hasFlash()) {
+                    // Night: light the room first, then take the photo once exposure settles.
+                    flashShotAt = now + 1300L
+                    main.post {
+                        setTorch(true)
+                        torchAutoUntil = System.currentTimeMillis() + 15_000L
+                    }
+                } else {
+                    val bmp = img.toBitmap()
+                    val rot = img.imageInfo.rotationDegrees
+                    netExec.execute { sendAlert(bmp, rot) }
+                }
             }
         } else {
             hits = 0
@@ -229,6 +272,7 @@ class CameraService : LifecycleService() {
             "call" -> beginLive(sid, m.optBoolean("ses", true) && micOk)
             "answer" -> if (sid == liveSid) live?.onAnswer(m.optString("sdp"))
             "bye" -> if (sid == liveSid) live?.end("izleyici kapattı")
+            "torch" -> if (sid == liveSid) setTorch(m.optBoolean("on", false))
             "sens" -> {
                 val v = m.optInt("v", 6).coerceIn(1, 10)
                 val p = Prefs.p(this)
@@ -258,13 +302,17 @@ class CameraService : LifecycleService() {
             onEnd = { reason -> main.post { liveEnded(sid, reason) } }
         )
         live = l
-        main.postDelayed({ if (live === l) l.start() }, 800)
+        l.start()
+        bindLive(l)
     }
 
     private fun liveEnded(sid: String, reason: String) {
         if (sid != liveSid) return
         live = null
         liveSid = ""
+        torchOn = false
+        torchAutoUntil = 0L
+        flashShotAt = 0L
         if (reason != "izleyici kapattı") {
             Signal.send(Pairing.watchInbox(code), code, JSONObject().put("t", "bye").put("sid", sid).put("msg", reason))
         }
@@ -279,6 +327,95 @@ class CameraService : LifecycleService() {
         isLive -> Notif.status(this, "Canlı izleniyor", "Diğer telefon şu an kamerayı izliyor.")
         motionOn -> Notif.status(this, "Kamera izliyor", "Hareket olursa diğer telefona haber verilecek.")
         else -> Notif.status(this, "Kamera açık", "Hareket algılama kapalı. Canlı izleme kullanılabilir.")
+    }
+
+    private fun nightFlash() = Prefs.p(this).getBoolean("geceFlas", true)
+
+    private fun hasFlash() = camera?.cameraInfo?.hasFlashUnit() == true
+
+    /** Main thread. */
+    private fun setTorch(on: Boolean) {
+        val cam = camera
+        if (cam == null || !cam.cameraInfo.hasFlashUnit()) {
+            if (live != null) sendTorchState(false, missing = true)
+            return
+        }
+        try { cam.cameraControl.enableTorch(on) } catch (e: Exception) { }
+        torchOn = on
+        if (!on) torchAutoUntil = 0L
+        settleUntil = System.currentTimeMillis() + 1500L
+        prev = null
+        hits = 0
+        if (live != null) sendTorchState(on)
+    }
+
+    private fun sendTorchState(on: Boolean, missing: Boolean = false) {
+        val sid = liveSid
+        if (sid.isEmpty()) return
+        Signal.send(
+            Pairing.watchInbox(code), code,
+            JSONObject().put("t", "torch").put("sid", sid).put("on", on).put("yok", missing)
+        )
+    }
+
+    private fun bindLive(l: CamLive) {
+        val future = ProcessCameraProvider.getInstance(this)
+        future.addListener({
+            if (live !== l) return@addListener
+            try {
+                val pr = future.get()
+                provider = pr
+                val sel = ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(Size(1280, 720), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
+                    ).build()
+                val a = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                    .setResolutionSelector(sel)
+                    .build()
+                liveStart = System.currentTimeMillis()
+                liveLumaChecked = false
+                a.setAnalyzer(analysisExec) { img ->
+                    try { if (live === l) liveFrame(img, l) } catch (e: Exception) { } finally { img.close() }
+                }
+                pr.unbindAll()
+                val cam = pr.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, a)
+                camera = cam
+                if (torchOn) cam.cameraControl.enableTorch(true)
+                sendTorchState(torchOn, missing = !cam.cameraInfo.hasFlashUnit())
+            } catch (e: Exception) {
+                l.end("kamera açılamadı")
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun liveFrame(img: ImageProxy, l: CamLive) {
+        l.pushFrame(img)
+        if (!liveLumaChecked && System.currentTimeMillis() - liveStart > 1500L) {
+            liveLumaChecked = true
+            if (!torchOn && nightFlash() && yAverage(img) < 40) {
+                main.post { if (live === l && !torchOn) setTorch(true) }
+            }
+        }
+    }
+
+    private fun yAverage(img: ImageProxy): Int {
+        val pl = img.planes[0]
+        val b = pl.buffer
+        val rs = pl.rowStride
+        val w = img.width
+        val h = img.height
+        var sum = 0L
+        var n = 0
+        for (y in 0 until 30) {
+            val row = (y * h / 30) * rs
+            for (x in 0 until 40) {
+                val i = row + (x * w / 40) * pl.pixelStride
+                if (i < b.limit()) { sum += b.get(i).toInt() and 0xff; n++ }
+            }
+        }
+        return if (n == 0) 255 else (sum / n).toInt()
     }
 
     private fun showNotif(isLive: Boolean) {

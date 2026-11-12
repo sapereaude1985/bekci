@@ -7,8 +7,6 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import org.json.JSONObject
-import org.webrtc.Camera2Enumerator
-import org.webrtc.CameraVideoCapturer
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -20,7 +18,10 @@ import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
-import org.webrtc.SurfaceTextureHelper
+import org.webrtc.JavaI420Buffer
+import org.webrtc.VideoFrame
+import androidx.camera.core.ImageProxy
+import java.nio.ByteBuffer
 import org.webrtc.VideoSource
 import org.webrtc.AudioSource
 import org.webrtc.MediaStreamTrack
@@ -238,13 +239,12 @@ class CamLive(
 ) {
     private val main = Handler(Looper.getMainLooper())
     private var pc: PeerConnection? = null
-    private var capturer: CameraVideoCapturer? = null
-    private var helper: SurfaceTextureHelper? = null
-    private var vsrc: VideoSource? = null
+    private val lock = Any()
+    @Volatile private var vsrc: VideoSource? = null
+    private var lastPush = 0L
     private var asrc: AudioSource? = null
     private var offerSent = false
-    private var closed = false
-    private var retried = false
+    @Volatile private var closed = false
     private var audioSaved = false
     private var prevMode = AudioManager.MODE_NORMAL
     private var prevSpeaker = false
@@ -287,24 +287,10 @@ class CamLive(
         try {
             Rtc.init(ctx)
             val f = Rtc.factory
-            val en = Camera2Enumerator(ctx)
-            val name = en.deviceNames.firstOrNull { en.isBackFacing(it) } ?: en.deviceNames.firstOrNull()
-            if (name == null) { end("kamera bulunamadı"); return }
-            val cap = en.createCapturer(name, object : CameraVideoCapturer.CameraEventsHandler {
-                override fun onCameraError(err: String?) { main.post { retryCapture() } }
-                override fun onCameraDisconnected() { main.post { retryCapture() } }
-                override fun onCameraFreezed(err: String?) {}
-                override fun onCameraOpening(n: String?) {}
-                override fun onFirstFrameAvailable() {}
-                override fun onCameraClosed() {}
-            })
-            capturer = cap
-            val h = SurfaceTextureHelper.create("bekci-canli", Rtc.egl.eglBaseContext)
-            helper = h
             val vs = f.createVideoSource(false)
+            vs.adaptOutputFormat(1280, 720, 15)
+            vs.capturerObserver.onCapturerStarted(true)
             vsrc = vs
-            cap.initialize(h, ctx, vs.capturerObserver)
-            cap.startCapture(1280, 720, 15)
 
             val p = f.createPeerConnection(Rtc.config(), object : PcObserver() {
                 override fun onIceGatheringChange(s: PeerConnection.IceGatheringState?) {
@@ -351,15 +337,61 @@ class CamLive(
         }
     }
 
-    private fun retryCapture() {
-        if (closed || retried) return
-        retried = true
-        main.postDelayed({
-            if (!closed) try {
-                capturer?.stopCapture()
-                capturer?.startCapture(1280, 720, 15)
-            } catch (e: Exception) { }
-        }, 1200)
+    /** Frames come from CameraX (camera service), so the torch stays controllable. */
+    fun pushFrame(img: ImageProxy) {
+        if (closed) return
+        val now = System.nanoTime()
+        if (now - lastPush < 62_000_000L) return
+        lastPush = now
+        synchronized(lock) {
+            val vs = vsrc ?: return
+            if (closed) return
+            val buf = toI420(img)
+            val frame = VideoFrame(buf, img.imageInfo.rotationDegrees, now)
+            try { vs.capturerObserver.onFrameCaptured(frame) } finally { frame.release() }
+        }
+    }
+
+    private fun toI420(img: ImageProxy): JavaI420Buffer {
+        val w = img.width
+        val h = img.height
+        val out = JavaI420Buffer.allocate(w, h)
+        val p = img.planes
+        copyPlane(p[0], w, h, out.dataY, out.strideY)
+        copyPlane(p[1], (w + 1) / 2, (h + 1) / 2, out.dataU, out.strideU)
+        copyPlane(p[2], (w + 1) / 2, (h + 1) / 2, out.dataV, out.strideV)
+        return out
+    }
+
+    private var rowBuf = ByteArray(0)
+
+    private fun copyPlane(pl: ImageProxy.PlaneProxy, w: Int, h: Int, dst: ByteBuffer, dstStride: Int) {
+        val src = pl.buffer
+        val rs = pl.rowStride
+        val ps = pl.pixelStride
+        val need = (w - 1) * ps + 1
+        if (rowBuf.size < need) rowBuf = ByteArray(need)
+        val row = rowBuf
+        for (y in 0 until h) {
+            val start = y * rs
+            if (start >= src.limit()) break
+            val len = minOf(need, src.limit() - start)
+            src.position(start)
+            src.get(row, 0, len)
+            val base = y * dstStride
+            if (ps == 1) {
+                dst.position(base)
+                dst.put(row, 0, minOf(w, len))
+            } else {
+                var x = 0
+                var i = 0
+                while (x < w && i < len) {
+                    dst.put(base + x, row[i])
+                    x++; i += ps
+                }
+            }
+        }
+        dst.rewind()
     }
 
     private fun sendOffer() {
@@ -398,13 +430,13 @@ class CamLive(
         listOf(gatherTimeout, answerTimeout, maxTimer, discTimer).forEach { main.removeCallbacks(it) }
         try { pc?.dispose() } catch (e: Exception) { }
         pc = null
-        try { capturer?.stopCapture() } catch (e: Exception) { }
-        try { capturer?.dispose() } catch (e: Exception) { }
-        capturer = null
-        try { vsrc?.dispose() } catch (e: Exception) { }
+        synchronized(lock) {
+            try { vsrc?.capturerObserver?.onCapturerStopped() } catch (e: Exception) { }
+            try { vsrc?.dispose() } catch (e: Exception) { }
+            vsrc = null
+        }
         try { asrc?.dispose() } catch (e: Exception) { }
-        try { helper?.dispose() } catch (e: Exception) { }
-        vsrc = null; asrc = null; helper = null
+        asrc = null
         speakerRestore()
         onEnd(reason)
     }
