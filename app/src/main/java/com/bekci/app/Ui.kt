@@ -214,7 +214,7 @@ fun HomeScreen() {
         withPerms(notifPerm()) {
             if (notifPerm().any { !granted(it) }) say("Bildirim izni verilmedi, uyarılar görünmeyecek.")
             ctx.stopService(Intent(ctx, CameraService::class.java))
-            ContextCompat.startForegroundService(ctx, Intent(ctx, WatchService::class.java))
+            ContextCompat.startForegroundService(ctx, Intent(ctx, WatchService::class.java).putExtra(WatchService.EXTRA_FRESH, true))
             say("Uyarılar açıldı.")
         }
     }
@@ -225,7 +225,7 @@ fun HomeScreen() {
         }
         if (WatchService.running) {
             ctx.stopService(Intent(ctx, WatchService::class.java))
-            ContextCompat.startForegroundService(ctx, Intent(ctx, WatchService::class.java))
+            ContextCompat.startForegroundService(ctx, Intent(ctx, WatchService::class.java).putExtra(WatchService.EXTRA_FRESH, true))
         }
     }
     fun applyCode(raw: String): Boolean {

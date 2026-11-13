@@ -21,6 +21,8 @@ class WatchService : Service() {
     companion object {
         @Volatile var running = false
         const val OFFLINE_MS = 12 * 60_000L
+        /** Set when the user turns alerts on: start from "now", don't replay what came while they were off. */
+        const val EXTRA_FRESH = "fresh"
     }
 
     @Volatile private var conn: HttpURLConnection? = null
@@ -48,6 +50,9 @@ class WatchService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.getBooleanExtra(EXTRA_FRESH, false) == true) {
+            Prefs.p(this).edit().remove("lastId").putLong("alertsSince", System.currentTimeMillis()).apply()
+        }
         if (thread == null) {
             running = true
             val topic = Pairing.topic(code)
@@ -61,8 +66,11 @@ class WatchService : Service() {
         var backoff = 2000L
         while (running) {
             try {
-                val last = Prefs.p(this).getString("lastId", null)
-                val q = if (last != null) "?since=$last" else ""
+                val p = Prefs.p(this)
+                val last = p.getString("lastId", null)
+                // Reconnects catch up from the last message; a fresh start only from when alerts were turned on.
+                val q = if (last != null) "?since=$last"
+                else "?since=" + (p.getLong("alertsSince", System.currentTimeMillis()) / 1000L)
                 val c = URL(Ntfy.HOST + topic + "/json" + q).openConnection() as HttpURLConnection
                 conn = c
                 c.connectTimeout = 15000
@@ -92,6 +100,8 @@ class WatchService : Service() {
         val id = o.optString("id")
         val time = o.optLong("time", System.currentTimeMillis() / 1000) * 1000
         if (id.isNotEmpty()) Prefs.p(this).edit().putString("lastId", id).apply()
+        // Anything older than the moment alerts were turned on is ignored (ntfy time has 1 s resolution).
+        if (time + 1000L < Prefs.p(this).getLong("alertsSince", 0L)) return
 
         val msg = o.optString("message")
         val att = o.optJSONObject("attachment")
