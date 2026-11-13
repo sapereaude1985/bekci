@@ -229,7 +229,7 @@ class CameraService : LifecycleService() {
             if (hits >= 2 && now - lastEvent > COOLDOWN) {
                 hits = 0
                 lastEvent = now
-                if (dark && !torchOn && nightFlash() && hasFlash()) {
+                if (dark && !torchOn && live == null && nightFlash() && hasFlash()) {
                     // Night: light the room first, then take the photo once exposure settles.
                     flashShotAt = now + 1300L
                     main.post {
@@ -285,6 +285,11 @@ class CameraService : LifecycleService() {
             "answer" -> if (sid == liveSid) live?.onAnswer(m.optString("sdp"))
             "bye" -> if (sid == liveSid) live?.end("izleyici kapattı")
             "torch" -> if (sid == liveSid) setTorch(m.optBoolean("on", false))
+            "alerts" -> {
+                val on = m.optBoolean("on", true)
+                Prefs.p(this).edit().putBoolean("izleyiciUyari", on).apply()
+                if (!on) torchOffUnlessLive()
+            }
             "sens" -> {
                 val v = m.optInt("v", 6).coerceIn(1, 10)
                 val p = Prefs.p(this)
@@ -356,7 +361,17 @@ class CameraService : LifecycleService() {
         netExec.execute { try { Ntfy.postText(t, msg) } catch (e: Exception) { } }
     }
 
-    private fun nightFlash() = Prefs.p(this).getBoolean("geceFlas", true)
+    /** Motion photos may use the flash only while detection is on and the watcher actually gets alerts. */
+    private fun nightFlash(): Boolean {
+        val p = Prefs.p(this)
+        return p.getBoolean("geceFlas", true) && motionOn && p.getBoolean("izleyiciUyari", true)
+    }
+
+    /** Outside live view the torch may stay on only for a motion photo. */
+    private fun torchOffUnlessLive() {
+        flashShotAt = 0L
+        if (live == null && torchOn) setTorch(false)
+    }
 
     private fun hasFlash() = camera?.cameraInfo?.hasFlashUnit() == true
 
@@ -421,7 +436,7 @@ class CameraService : LifecycleService() {
         l.pushFrame(img)
         if (!liveLumaChecked && System.currentTimeMillis() - liveStart > 1500L) {
             liveLumaChecked = true
-            if (!torchOn && nightFlash() && yAverage(img) < 40) {
+            if (!torchOn && Prefs.p(this).getBoolean("geceFlas", true) && yAverage(img) < 40) {
                 main.post { if (live === l && !torchOn) setTorch(true) }
             }
         }
@@ -454,7 +469,7 @@ class CameraService : LifecycleService() {
         motionOn = on
         prev = null
         hits = 0
-        if (on) armedAt = System.currentTimeMillis() + ARM_DELAY
+        if (on) armedAt = System.currentTimeMillis() + ARM_DELAY else torchOffUnlessLive()
         showNotif(live != null)
         announceMotion(on)
     }

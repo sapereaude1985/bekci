@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
 import org.json.JSONObject
+import java.util.UUID
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -54,6 +55,7 @@ class WatchService : Service() {
             Prefs.p(this).edit().remove("lastId").putLong("alertsSince", System.currentTimeMillis()).apply()
         }
         if (thread == null) {
+            tellCamera(code, true)
             running = true
             val topic = Pairing.topic(code)
             thread = Thread { loop(topic, code) }.also { it.start() }
@@ -191,7 +193,16 @@ class WatchService : Service() {
         }
     }
 
+    /** Lets the camera know whether anyone is receiving alerts (it won't flash for nobody). */
+    private fun tellCamera(code: String, on: Boolean) {
+        Signal.send(
+            Pairing.camInbox(code), code,
+            JSONObject().put("t", "alerts").put("sid", UUID.randomUUID().toString().take(8)).put("on", on)
+        )
+    }
+
     override fun onDestroy() {
+        Prefs.code(this)?.let { tellCamera(it, false) }
         checker?.interrupt()
         checker = null
         running = false

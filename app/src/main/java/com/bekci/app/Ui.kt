@@ -702,7 +702,7 @@ private fun CameraHome(
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         SettingRow(
             "Karanlıkta flaş",
-            "Ortam karanlıksa hareket fotoğrafı çekilirken flaş yanar, 15 sn hareket olmazsa söner. Canlı yayın karanlıkta açılırsa flaş da yanar."
+            "Hareket algılama ve izleyicide uyarılar açıkken, karanlıkta hareket fotoğrafı için flaş yanar; 15 sn hareket olmazsa söner. Canlı yayın karanlıkta açılırsa da yanar. Bunların dışında flaş hiç yanmaz."
         ) { Switch(checked = nightFlash, onCheckedChange = onNightFlash) }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         SettingRow("Canlı yayında ortam sesi", "Mikrofon yalnızca biri canlı izlerken açılır.") {
