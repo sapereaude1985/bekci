@@ -6,6 +6,10 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -77,6 +81,24 @@ class CameraService : LifecycleService() {
     @Volatile private var settleUntil = 0L
     @Volatile private var dark = false
     private var flashShotAt = 0L
+
+    // The phone itself being moved/bumped must not fire the flash.
+    @Volatile private var deviceMovedAt = 0L
+    private val grav = FloatArray(3)
+    private var gravInit = false
+    private val shake = object : SensorEventListener {
+        override fun onSensorChanged(e: SensorEvent) {
+            if (!gravInit) { System.arraycopy(e.values, 0, grav, 0, 3); gravInit = true; return }
+            var d = 0f
+            for (i in 0..2) {
+                grav[i] = 0.9f * grav[i] + 0.1f * e.values[i]
+                val lin = e.values[i] - grav[i]
+                d += lin * lin
+            }
+            if (d > 1.0f) deviceMovedAt = System.currentTimeMillis()
+        }
+        override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+    }
     private var liveStart = 0L
     private var liveLumaChecked = false
 
@@ -136,6 +158,10 @@ class CameraService : LifecycleService() {
                 acquire(24 * 60 * 60 * 1000L)
             }
             Prefs.p(this).registerOnSharedPreferenceChangeListener(prefListener)
+            try {
+                val sm = getSystemService(SensorManager::class.java)
+                sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm.registerListener(shake, it, SensorManager.SENSOR_DELAY_NORMAL) }
+            } catch (e: Exception) { }
             startCamera()
             sig = SignalChannel(Pairing.camInbox(c), c, onOpen = {}, onMsg = { m -> main.post { onSignal(m) } })
                 .also { it.start() }
@@ -207,6 +233,7 @@ class CameraService : LifecycleService() {
             prev = cur
             val bmp = img.toBitmap()
             val rot = img.imageInfo.rotationDegrees
+            main.post { if (live == null && torchOn) setTorch(false) } // photo taken: flash off
             netExec.execute { sendAlert(bmp, rot) }
             return
         }
@@ -225,17 +252,14 @@ class CameraService : LifecycleService() {
 
         if (frac > threshold) {
             hits++
-            if (torchOn && torchAutoUntil > 0) torchAutoUntil = now + 15_000L
             if (hits >= 2 && now - lastEvent > COOLDOWN) {
                 hits = 0
                 lastEvent = now
-                if (dark && !torchOn && live == null && nightFlash() && hasFlash()) {
-                    // Night: light the room first, then take the photo once exposure settles.
-                    flashShotAt = now + 1300L
-                    main.post {
-                        setTorch(true)
-                        torchAutoUntil = System.currentTimeMillis() + 15_000L
-                    }
+                val phoneMoving = now - deviceMovedAt < 2500L
+                if (dark && !torchOn && !phoneMoving && live == null && nightFlash() && hasFlash()) {
+                    // Night: flash on, let exposure settle ~1 s, take the photo, flash off.
+                    flashShotAt = now + 1200L
+                    main.post { setTorch(true) }
                 } else {
                     val bmp = img.toBitmap()
                     val rot = img.imageInfo.rotationDegrees
@@ -498,6 +522,7 @@ class CameraService : LifecycleService() {
     override fun onDestroy() {
         running = false
         main.removeCallbacks(heartbeat)
+        try { getSystemService(SensorManager::class.java).unregisterListener(shake) } catch (e: Exception) { }
         Prefs.p(this).unregisterOnSharedPreferenceChangeListener(prefListener)
         sig?.stop()
         sig = null
