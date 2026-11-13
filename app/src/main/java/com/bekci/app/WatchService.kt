@@ -109,6 +109,10 @@ class WatchService : Service() {
         val att = o.optJSONObject("attachment")
         seen(time, msg, att == null)
         if (att == null && msg.startsWith("hb_")) return
+        if (att == null && msg.startsWith("flash_")) {
+            Prefs.p(this).edit().putBoolean("camFlash", msg == "flash_1").putLong("camFlashPending", 0L).apply()
+            return
+        }
         if (att == null && msg.startsWith("sens_")) {
             val v = msg.removePrefix("sens_").toIntOrNull()?.coerceIn(1, 10) ?: return
             Prefs.p(this).edit().putInt("camSens", v).putLong("camSensPending", 0L).apply()

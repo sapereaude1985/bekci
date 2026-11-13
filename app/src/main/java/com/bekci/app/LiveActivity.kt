@@ -104,6 +104,7 @@ class LiveActivity : ComponentActivity() {
     private val canTalk = mutableStateOf(false)
     private val torchAvail = mutableStateOf(false)
     private val torchOn = mutableStateOf(false)
+    private var torchAllowed = true
     private val talking = mutableStateOf(false)
     private var micSrc: AudioSource? = null
     private var micTrack: AudioTrack? = null
@@ -207,6 +208,7 @@ class LiveActivity : ComponentActivity() {
             "torch" -> {
                 torchAvail.value = !m.optBoolean("yok", false)
                 torchOn.value = m.optBoolean("on", false)
+                torchAllowed = m.optBoolean("izin", true)
             }
             "bye" -> {
                 val why = m.optString("msg")
@@ -329,6 +331,10 @@ class LiveActivity : ComponentActivity() {
     }
 
     private fun toggleTorch() {
+        if (!torchAllowed && !torchOn.value) {
+            toast("Flaş ayarı kapalı. Bekçi ana ekranındaki Flaş anahtarından açabilirsin.")
+            return
+        }
         val want = !torchOn.value
         torchOn.value = want
         Signal.send(

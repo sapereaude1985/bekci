@@ -150,6 +150,8 @@ fun HomeScreen() {
     LaunchedEffect(tick) { if (!sensDragging) camSens = p.getInt("camSens", 6).toFloat() }
     val sensPending = remember(tick) { p.getLong("camSensPending", 0L) }
     val camHealth = remember(tick) { camHealth(p, WatchService.running) }
+    val camFlash = remember(tick) { p.getBoolean("camFlash", true) }
+    val flashPending = remember(tick) { p.getLong("camFlashPending", 0L) }
 
     var saveGallery by remember { mutableStateOf(p.getBoolean("galeri", true)) }
     var photos by remember { mutableStateOf<List<Pair<Uri, ImageBitmap>>>(emptyList()) }
@@ -262,6 +264,17 @@ fun HomeScreen() {
             say("Kameraya iletilemedi. İnternet bağlantını kontrol et.")
         }
     }
+    fun sendFlash(on: Boolean) {
+        p.edit().putBoolean("camFlash", on).putLong("camFlashPending", System.currentTimeMillis()).apply()
+        tick++
+        Signal.send(
+            Pairing.camInbox(code), code,
+            JSONObject().put("t", "flash").put("sid", UUID.randomUUID().toString().take(8)).put("on", on)
+        ) {
+            p.edit().putBoolean("camFlash", !on).putLong("camFlashPending", 0L).apply()
+            say("Kameraya iletilemedi. İnternet bağlantını kontrol et.")
+        }
+    }
     fun sendSens(v: Int) {
         p.edit().putInt("camSens", v).putLong("camSensPending", System.currentTimeMillis()).apply()
         Signal.send(
@@ -369,6 +382,15 @@ fun HomeScreen() {
                     paired = paired, watchOn = watchOn, code = code, lastTime = lastTime, batteryOk = batteryOk,
                     camMotion = camMotion,
                     camHealth = camHealth,
+                    camFlash = camFlash,
+                    flashStatus = when {
+                        flashPending > 0 && System.currentTimeMillis() - flashPending < 30_000 -> "Evdeki kameraya iletiliyor…"
+                        flashPending > 0 && !watchOn -> "İletildi. Onayı görmek için uyarıları aç."
+                        flashPending > 0 -> "Kamera yanıt vermedi. Kamera telefonu kapalı olabilir."
+                        camFlash -> "Açık. Karanlıkta hareket fotoğrafı çekilirken bir an yanar; canlı yayında 🔦 ile açabilirsin."
+                        else -> "Kapalı. Flaş hiçbir durumda yanmaz."
+                    },
+                    onFlash = { sendFlash(it) },
                     motionStatus = when {
                         pendingSince > 0 && pendingAge < 30_000 -> "Evdeki kameraya iletiliyor…"
                         pendingSince > 0 && !watchOn -> "İletildi. Onayı görmek için uyarıları aç."
@@ -701,8 +723,9 @@ private fun CameraHome(
         )
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         SettingRow(
-            "Karanlıkta flaş",
-            "Hareket algılama ve izleyicide uyarılar açıkken, karanlıkta hareket fotoğrafı çekilirken flaş bir an yanar ve fotoğraf çekilince söner. Canlı yayın karanlıkta açılırsa da yanar. Telefonun kendisi kıpırdatılırsa yanmaz."
+            "Flaş",
+            if (nightFlash) "Açık. Karanlıkta hareket fotoğrafı çekilirken bir an yanar (izleyicide uyarılar açıksa); canlı yayında 🔦 ile açılabilir. Telefon kıpırdatılırsa yanmaz."
+            else "Kapalı. Flaş hiçbir durumda yanmaz, canlı yayında da açılamaz."
         ) { Switch(checked = nightFlash, onCheckedChange = onNightFlash) }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         SettingRow("Canlı yayında ortam sesi", "Mikrofon yalnızca biri canlı izlerken açılır.") {
@@ -727,6 +750,7 @@ private fun WatcherHome(
     paired: Boolean, watchOn: Boolean, code: String, lastTime: Long, batteryOk: Boolean,
     camMotion: Boolean, motionStatus: String, onMotion: (Boolean) -> Unit,
     camHealth: CamHealth,
+    camFlash: Boolean, flashStatus: String, onFlash: (Boolean) -> Unit,
     camSens: Float, sensStatus: String, onSens: (Float) -> Unit, onSensDone: () -> Unit,
     fenceOn: Boolean, fenceBusy: Boolean, onFence: (Boolean) -> Unit, onUpdateHome: () -> Unit, onPin: () -> Unit,
     photos: List<Pair<Uri, ImageBitmap>>, onOpenPhoto: (Uri) -> Unit,
@@ -814,6 +838,18 @@ private fun WatcherHome(
                 Spacer(Modifier.height(4.dp))
                 Text(sensStatus, style = MaterialTheme.typography.bodySmall, color = c.primary)
             }
+        }
+    }
+
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+        Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Flaş", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(2.dp))
+                Text(flashStatus, style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(checked = camFlash, onCheckedChange = onFlash)
         }
     }
 

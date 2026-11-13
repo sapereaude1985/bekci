@@ -112,6 +112,7 @@ class CameraService : LifecycleService() {
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
         if (key == "hareket") main.post { applyMotion(sp.getBoolean("hareket", true)) }
         if (key == "sens") main.post { applySens(sp.getInt("sens", 6)) }
+        if (key == "geceFlas") main.post { applyFlashSetting(sp.getBoolean("geceFlas", true)) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -170,6 +171,7 @@ class CameraService : LifecycleService() {
                 try { Ntfy.postText(t, "start") } catch (e: Exception) { }
                 if (!motionOn) try { Ntfy.postText(t, "motion_off") } catch (e: Exception) { }
                 try { Ntfy.postText(t, "sens_" + Prefs.p(this).getInt("sens", 6)) } catch (e: Exception) { }
+                try { Ntfy.postText(t, "flash_" + (if (flashAllowed()) 1 else 0)) } catch (e: Exception) { }
                 main.postDelayed(heartbeat, 2000L)
             }
         }
@@ -309,6 +311,12 @@ class CameraService : LifecycleService() {
             "answer" -> if (sid == liveSid) live?.onAnswer(m.optString("sdp"))
             "bye" -> if (sid == liveSid) live?.end("izleyici kapattı")
             "torch" -> if (sid == liveSid) setTorch(m.optBoolean("on", false))
+            "flash" -> {
+                val on = m.optBoolean("on", true)
+                val p = Prefs.p(this)
+                if (p.getBoolean("geceFlas", true) == on) announceFlash(on)
+                else p.edit().putBoolean("geceFlas", on).apply()
+            }
             "alerts" -> {
                 val on = m.optBoolean("on", true)
                 Prefs.p(this).edit().putBoolean("izleyiciUyari", on).apply()
@@ -399,11 +407,33 @@ class CameraService : LifecycleService() {
 
     private fun hasFlash() = camera?.cameraInfo?.hasFlashUnit() == true
 
+    private fun flashAllowed() = Prefs.p(this).getBoolean("geceFlas", true)
+
+    private fun applyFlashSetting(on: Boolean) {
+        if (!running) return
+        if (!on) {
+            flashShotAt = 0L
+            if (torchOn) setTorch(false)
+        }
+        if (live != null) sendTorchState(torchOn)
+        announceFlash(on)
+    }
+
+    private fun announceFlash(on: Boolean) {
+        val t = topic
+        if (t.isEmpty()) return
+        netExec.execute { try { Ntfy.postText(t, "flash_" + (if (on) 1 else 0)) } catch (e: Exception) { } }
+    }
+
     /** Main thread. */
     private fun setTorch(on: Boolean) {
         val cam = camera
         if (cam == null || !cam.cameraInfo.hasFlashUnit()) {
             if (live != null) sendTorchState(false, missing = true)
+            return
+        }
+        if (on && !flashAllowed()) {
+            if (live != null) sendTorchState(false)
             return
         }
         try { cam.cameraControl.enableTorch(on) } catch (e: Exception) { }
@@ -420,7 +450,7 @@ class CameraService : LifecycleService() {
         if (sid.isEmpty()) return
         Signal.send(
             Pairing.watchInbox(code), code,
-            JSONObject().put("t", "torch").put("sid", sid).put("on", on).put("yok", missing)
+            JSONObject().put("t", "torch").put("sid", sid).put("on", on).put("yok", missing).put("izin", flashAllowed())
         )
     }
 
