@@ -43,6 +43,8 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -149,6 +151,9 @@ fun HomeScreen() {
     var sensDragging by remember { mutableStateOf(false) }
     LaunchedEffect(tick) { if (!sensDragging) camSens = p.getInt("camSens", 6).toFloat() }
     val sensPending = remember(tick) { p.getLong("camSensPending", 0L) }
+    val statusReqAt = remember(tick) { p.getLong("statusReqAt", 0L) }
+    val refreshing = statusReqAt > 0 && System.currentTimeMillis() - statusReqAt < 20_000 &&
+        p.getLong("camLastSeen", 0L) < statusReqAt - 1000
     val camHealth = remember(tick) { camHealth(p, WatchService.running) }
     val camFlash = remember(tick) { p.getBoolean("camFlash", true) }
     val flashPending = remember(tick) { p.getLong("camFlashPending", 0L) }
@@ -263,6 +268,24 @@ fun HomeScreen() {
             p.edit().putBoolean("camMotion", !on).putLong("camMotionPending", 0L).apply()
             say("Kameraya iletilemedi. İnternet bağlantını kontrol et.")
         }
+    }
+    fun requestStatus(quiet: Boolean) {
+        if (code.isEmpty()) return
+        p.edit().putLong("statusReqAt", System.currentTimeMillis()).apply()
+        tick++
+        Signal.send(
+            Pairing.camInbox(code), code,
+            JSONObject().put("t", "status").put("sid", UUID.randomUUID().toString().take(8))
+        ) {
+            p.edit().putLong("statusReqAt", 0L).apply()
+            if (!quiet) say("Durum istenemedi. İnternet bağlantını kontrol et.")
+        }
+    }
+    // Opening the app refreshes the camera status (at most once a minute).
+    LaunchedEffect(role, paired) {
+        if (role == ROLE_WATCH && paired && WatchService.running &&
+            System.currentTimeMillis() - p.getLong("statusReqAt", 0L) > 60_000L
+        ) requestStatus(quiet = true)
     }
     fun sendFlash(on: Boolean) {
         p.edit().putBoolean("camFlash", on).putLong("camFlashPending", System.currentTimeMillis()).apply()
@@ -382,6 +405,10 @@ fun HomeScreen() {
                     paired = paired, watchOn = watchOn, code = code, lastTime = lastTime, batteryOk = batteryOk,
                     camMotion = camMotion,
                     camHealth = camHealth,
+                    refreshing = refreshing,
+                    onRefresh = {
+                        if (!watchOn) say("Durumu almak için önce uyarıları aç.") else requestStatus(quiet = false)
+                    },
                     camFlash = camFlash,
                     flashStatus = when {
                         flashPending > 0 && System.currentTimeMillis() - flashPending < 30_000 -> "Evdeki kameraya iletiliyor…"
@@ -749,7 +776,7 @@ private fun CameraHome(
 private fun WatcherHome(
     paired: Boolean, watchOn: Boolean, code: String, lastTime: Long, batteryOk: Boolean,
     camMotion: Boolean, motionStatus: String, onMotion: (Boolean) -> Unit,
-    camHealth: CamHealth,
+    camHealth: CamHealth, refreshing: Boolean, onRefresh: () -> Unit,
     camFlash: Boolean, flashStatus: String, onFlash: (Boolean) -> Unit,
     camSens: Float, sensStatus: String, onSens: (Float) -> Unit, onSensDone: () -> Unit,
     fenceOn: Boolean, fenceBusy: Boolean, onFence: (Boolean) -> Unit, onUpdateHome: () -> Unit, onPin: () -> Unit,
@@ -803,7 +830,7 @@ private fun WatcherHome(
         }
     }
 
-    HealthCard(camHealth)
+    HealthCard(camHealth, refreshing, onRefresh)
 
     StatusCard(
         on = watchOn,
@@ -963,7 +990,7 @@ private fun camHealth(p: android.content.SharedPreferences, watchOn: Boolean): C
 }
 
 @Composable
-private fun HealthCard(h: CamHealth) {
+private fun HealthCard(h: CamHealth, refreshing: Boolean, onRefresh: () -> Unit) {
     val c = MaterialTheme.colorScheme
     val dot = when (h.level) {
         1 -> Color(0xFF2EB67D)
@@ -982,8 +1009,14 @@ private fun HealthCard(h: CamHealth) {
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text("Evdeki kamera: ${h.title}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(h.detail, style = MaterialTheme.typography.bodyMedium, color = if (h.level == 2) c.onErrorContainer else c.onSurfaceVariant)
+                Text(
+                    if (refreshing) "Durum isteniyor…" else h.detail,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (h.level == 2) c.onErrorContainer else c.onSurfaceVariant
+                )
             }
+            if (refreshing) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
+            else IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, contentDescription = "Durumu yenile") }
         }
     }
 }

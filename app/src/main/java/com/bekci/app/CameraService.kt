@@ -328,8 +328,9 @@ class CameraService : LifecycleService() {
             "alerts" -> {
                 val on = m.optBoolean("on", true)
                 Prefs.p(this).edit().putBoolean("izleyiciUyari", on).apply()
-                if (!on) torchOffUnlessLive()
+                if (!on) torchOffUnlessLive() else sendStatus()
             }
+            "status" -> sendStatus()
             "sens" -> {
                 val v = m.optInt("v", 6).coerceIn(1, 10)
                 val p = Prefs.p(this)
@@ -384,6 +385,16 @@ class CameraService : LifecycleService() {
         isLive -> Notif.status(this, "Canlı izleniyor", "Diğer telefon şu an kamerayı izliyor.")
         motionOn -> Notif.status(this, "Kamera izliyor", "Hareket olursa diğer telefona haber verilecek.")
         else -> Notif.status(this, "Kamera açık", "Hareket algılama kapalı. Canlı izleme kullanılabilir.")
+    }
+
+    /** Full, silent status for the watcher: st_<battery>_<plugged>_<motion>_<sens>_<flash>. */
+    private fun sendStatus() {
+        val t = topic
+        if (t.isEmpty()) return
+        val (pct, chg) = batteryState()
+        val msg = "st_${pct}_${if (chg) 1 else 0}_${if (motionOn) 1 else 0}_" +
+            "${Prefs.p(this).getInt("sens", 6)}_${if (flashAllowed()) 1 else 0}"
+        netExec.execute { try { Ntfy.postText(t, msg) } catch (e: Exception) { } }
     }
 
     /** "hb_<battery %>_<1 if charging>": lets the watcher notice when this phone goes quiet. */

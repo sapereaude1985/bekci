@@ -109,6 +109,16 @@ class WatchService : Service() {
         val att = o.optJSONObject("attachment")
         seen(time, msg, att == null)
         if (att == null && msg.startsWith("hb_")) return
+        if (att == null && msg.startsWith("st_")) {
+            // Silent status report (on request / when alerts are turned on): no notification.
+            val f = msg.split("_")
+            val e = Prefs.p(this).edit()
+            f.getOrNull(3)?.let { e.putBoolean("camMotion", it == "1").putLong("camMotionPending", 0L) }
+            f.getOrNull(4)?.toIntOrNull()?.let { e.putInt("camSens", it.coerceIn(1, 10)).putLong("camSensPending", 0L) }
+            f.getOrNull(5)?.let { e.putBoolean("camFlash", it == "1").putLong("camFlashPending", 0L) }
+            e.apply()
+            return
+        }
         if (att == null && msg.startsWith("flash_")) {
             Prefs.p(this).edit().putBoolean("camFlash", msg == "flash_1").putLong("camFlashPending", 0L).apply()
             return
@@ -158,7 +168,7 @@ class WatchService : Service() {
             text && msg == "stop" -> e.putBoolean("camRunning", false).putBoolean("camOfflineAlerted", false)
             else -> e.putBoolean("camRunning", true)
         }
-        if (text && msg.startsWith("hb_")) {
+        if (text && (msg.startsWith("hb_") || msg.startsWith("st_"))) {
             val parts = msg.split("_")
             val pct = parts.getOrNull(1)?.toIntOrNull() ?: -1
             val chg = parts.getOrNull(2) == "1"
