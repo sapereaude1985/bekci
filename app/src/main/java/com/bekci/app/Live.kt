@@ -226,7 +226,7 @@ class SignalChannel(
                 conn = null
             }
             if (!running) break
-            if (droppedAt == 0L || lastId == null) droppedAt = ServerClock.now()
+            if (droppedAt == 0L) droppedAt = ServerClock.now()
             try { Thread.sleep(backoff) } catch (e: InterruptedException) { break }
             backoff = minOf(backoff * 2, 30_000L)
         }
