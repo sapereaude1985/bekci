@@ -68,6 +68,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -150,6 +151,23 @@ fun HomeScreen() {
     val bagli = remember(tick) { p.getBoolean("bagli", false) }
     val izleyiciAd = remember(tick) { p.getString("izleyiciAd", null) }
     val qrCode = remember(tick, code) { Prefs.qrCode(ctx) ?: code }
+    // Camera screen: accept a watcher even when monitoring isn't running yet.
+    DisposableEffect(role, bagli, camOn, qrCode) {
+        val ch = if (role == ROLE_CAM && !bagli && !camOn && qrCode.isNotEmpty()) {
+            val qr = qrCode
+            SignalChannel(
+                Pairing.pairTopic(qr), qr, onOpen = {},
+                onMsg = { m ->
+                    if (PairHost.handle(ctx, m, qr)) scope.launch {
+                        tick++
+                        say("İzleyici telefon bağlandı. Şimdi İzlemeyi başlat’a basabilirsin.")
+                    }
+                },
+                app = ctx.applicationContext
+            ).also { it.start() }
+        } else null
+        onDispose { ch?.stop() }
+    }
     // The camera can release us (WatchService then clears the pairing): follow it here.
     LaunchedEffect(tick) {
         if (role == ROLE_WATCH) {
@@ -167,7 +185,7 @@ fun HomeScreen() {
     LaunchedEffect(tick) { if (!sensDragging) camSens = p.getInt("camSens", 6).toFloat() }
     val sensPending = remember(tick) { p.getLong("camSensPending", 0L) }
     val statusReqAt = remember(tick) { p.getLong("statusReqAt", 0L) }
-    val refreshing = statusReqAt > 0 && System.currentTimeMillis() - statusReqAt < 20_000 &&
+    val refreshing = statusReqAt > 0 && ServerClock.now() - statusReqAt < 20_000 &&
         p.getLong("camLastSeen", 0L) < statusReqAt - 1000
     val camHealth = remember(tick) { camHealth(p, WatchService.running) }
     val camClimate = remember(tick) {
@@ -336,12 +354,13 @@ fun HomeScreen() {
                         end("Bu kamera başka bir izleyici telefona bağlı. O telefon eşleştirmeyi kaldırmalı ya da kamera telefonunda “Eşleştirmeyi sıfırla”ya basılmalı.")
                     }
                 }
-            }
+            },
+            app = ctx.applicationContext
         )
         ch.start()
         scope.launch {
             delay(35_000)
-            end(if (quiet) null else "Evdeki kamera yanıt vermedi. Kamera telefonunda izlemenin açık olduğundan emin ol.")
+            end(if (quiet) null else "Evdeki kamera yanıt vermedi. Evdeki telefonda Bekçi açık olmalı ve internete bağlı olmalı.")
         }
     }
     fun applyCode(raw: String): Boolean {
@@ -380,7 +399,7 @@ fun HomeScreen() {
     }
     fun requestStatus(quiet: Boolean) {
         if (code.isEmpty()) return
-        p.edit().putLong("statusReqAt", System.currentTimeMillis()).apply()
+        p.edit().putLong("statusReqAt", ServerClock.now()).apply()
         tick++
         Signal.send(
             Pairing.camInbox(code), code,
@@ -393,7 +412,7 @@ fun HomeScreen() {
     // Opening the app refreshes the camera status (at most once a minute).
     LaunchedEffect(role, paired) {
         if (role == ROLE_WATCH && paired && WatchService.running &&
-            System.currentTimeMillis() - p.getLong("statusReqAt", 0L) > 60_000L
+            ServerClock.now() - p.getLong("statusReqAt", 0L) > 60_000L
         ) requestStatus(quiet = true)
     }
     fun sendFlash(on: Boolean) {
@@ -935,7 +954,7 @@ private fun CameraHome(
         )
     } else Section("İzleyici telefonu bağla") {
         Text(
-            "Yanındaki telefonda Bekçi’yi aç, “İzleyici”yi seç ve bu QR kodu tarat. İlk tarayan telefon bağlanır ve eşleştirme ona kilitlenir. Bağlanmak için bu telefonda izlemenin açık olması gerekir.",
+            "Yanındaki telefonda Bekçi’yi aç, “İzleyici”yi seç ve bu QR kodu tarat. İlk tarayan telefon bağlanır ve eşleştirme ona kilitlenir. Tarama sırasında bu ekran açık kalsın.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1225,7 +1244,7 @@ private fun camHealth(p: android.content.SharedPreferences, watchOn: Boolean): C
     if (!p.getBoolean("camHbSeen", false))
         return CamHealth(0, "Durum bilgisi bekleniyor", "Evdeki telefonda Bekçi 2.8 veya sonrası çalışınca birkaç dakika içinde görünür.")
     val last = p.getLong("camLastSeen", 0L)
-    val gap = System.currentTimeMillis() - last
+    val gap = ServerClock.now() - last
     if (!p.getBoolean("camRunning", false)) return CamHealth(0, "Kamera kapalı", "Durduruldu · ${ago(gap)}")
     val pct = p.getInt("camBattery", -1)
     val chg = p.getBoolean("camCharging", false)
@@ -1314,7 +1333,7 @@ fun ClimateCard(c: Climate?, title: String) {
             Spacer(Modifier.height(8.dp))
             Text(
                 (if (roomKnown) "" else "Bu telefonda oda sıcaklığı sensörü yok; gösterilen telefonun kendi sıcaklığı, oda genelde birkaç derece daha serindir. ") +
-                    "Ölçüm: " + agoText(System.currentTimeMillis() - c.at),
+                    "Ölçüm: " + agoText(ServerClock.now() - c.at),
                 style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant
             )
         }

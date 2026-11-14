@@ -51,8 +51,9 @@ class WatchService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        ServerClock.init(this)
         if (intent?.getBooleanExtra(EXTRA_FRESH, false) == true) {
-            Prefs.p(this).edit().remove("lastId").putLong("alertsSince", System.currentTimeMillis()).apply()
+            Prefs.p(this).edit().remove("lastId").putLong("alertsSince", ServerClock.now()).apply()
         }
         if (thread == null) {
             tellCamera(code, true)
@@ -72,7 +73,7 @@ class WatchService : Service() {
                 val last = p.getString("lastId", null)
                 // Reconnects catch up from the last message; a fresh start only from when alerts were turned on.
                 val q = if (last != null) "?since=$last"
-                else "?since=" + (p.getLong("alertsSince", System.currentTimeMillis()) / 1000L)
+                else "?since=" + (p.getLong("alertsSince", ServerClock.now()) / 1000L - 5)
                 val c = URL(Ntfy.HOST + topic + "/json" + q).openConnection() as HttpURLConnection
                 conn = c
                 c.connectTimeout = 15000
@@ -98,19 +99,20 @@ class WatchService : Service() {
 
     private fun handle(line: String, code: String) {
         val o = try { JSONObject(line) } catch (e: Exception) { return }
+        if (o.optString("event") == "open") { ServerClock.update(this, o.optLong("time", 0L) * 1000L); return }
         if (o.optString("event") != "message") return
         val id = o.optString("id")
         val time = o.optLong("time", System.currentTimeMillis() / 1000) * 1000
         if (id.isNotEmpty()) Prefs.p(this).edit().putString("lastId", id).apply()
         // Anything older than the moment alerts were turned on is ignored (ntfy time has 1 s resolution).
-        if (time + 1000L < Prefs.p(this).getLong("alertsSince", 0L)) return
+        if (time + 5000L < Prefs.p(this).getLong("alertsSince", 0L)) return
 
         val msg = o.optString("message")
         val att = o.optJSONObject("attachment")
         seen(time, msg, att == null)
         if (att == null && msg.startsWith("hb_")) return
         if (att == null && msg == "unpaired") {
-            if (System.currentTimeMillis() - time < 24 * 3600_000L) {
+            if (ServerClock.now() - time < 24 * 3600_000L) {
                 Prefs.p(this).edit().putBoolean("paired", false).putBoolean("baglanti", false).remove("code").apply()
                 Notif.alert(this, "Evdeki kamera eşleştirmeyi kaldırdı", "Yeniden bağlanmak için kameradaki yeni QR kodu tara.", null, true)
                 running = false
@@ -172,7 +174,7 @@ class WatchService : Service() {
         val p = Prefs.p(this)
         val e = p.edit()
         if (time > p.getLong("camLastSeen", 0L)) e.putLong("camLastSeen", time)
-        val recent = System.currentTimeMillis() - time < OFFLINE_MS
+        val recent = ServerClock.now() - time < OFFLINE_MS
         when {
             text && msg == "stop" -> e.putBoolean("camRunning", false).putBoolean("camOfflineAlerted", false)
             else -> e.putBoolean("camRunning", true)
@@ -208,11 +210,12 @@ class WatchService : Service() {
             if (!running) return
             val p = Prefs.p(this)
             val now = System.currentTimeMillis()
+            val sNow = ServerClock.now()
             // Only judge when our own connection is healthy, so our outage isn't blamed on the camera.
             if (now - lastLine > 150_000L) continue
             if (!p.getBoolean("camHbSeen", false) || !p.getBoolean("camRunning", false)) continue
             val last = p.getLong("camLastSeen", 0L)
-            if (last == 0L || now - last < OFFLINE_MS || p.getBoolean("camOfflineAlerted", false)) continue
+            if (last == 0L || sNow - last < OFFLINE_MS || p.getBoolean("camOfflineAlerted", false)) continue
             p.edit().putBoolean("camOfflineAlerted", true).apply()
             Notif.alert(
                 this, "Evdeki kamera çevrimdışı",

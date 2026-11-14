@@ -10,6 +10,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         Notif.channels(this)
+        ServerClock.init(this)
         if (Prefs.code(this) == null) Prefs.p(this).edit().putString("code", Pairing.newCode()).apply()
         setContent { BekciTheme { HomeScreen() } }
     }

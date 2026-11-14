@@ -169,9 +169,12 @@ class SignalChannel(
     private val topic: String,
     private val code: String,
     private val onOpen: () -> Unit,
-    private val onMsg: (JSONObject) -> Unit
+    private val onMsg: (JSONObject) -> Unit,
+    private val app: Context? = null
 ) {
     @Volatile private var running = false
+    @Volatile private var lastId: String? = null
+    @Volatile private var droppedAt = 0L
     @Volatile private var conn: HttpURLConnection? = null
     private var thread: Thread? = null
     private var opened = false
@@ -186,7 +189,13 @@ class SignalChannel(
         var backoff = 2000L
         while (running) {
             try {
-                val c = URL(Ntfy.HOST + topic + "/json").openConnection() as HttpURLConnection
+                // After a drop, catch up on what arrived meanwhile instead of losing it.
+                val q = when {
+                    lastId != null -> "?since=$lastId"
+                    droppedAt > 0 -> "?since=" + (droppedAt / 1000L - 5)
+                    else -> ""
+                }
+                val c = URL(Ntfy.HOST + topic + "/json" + q).openConnection() as HttpURLConnection
                 conn = c
                 c.connectTimeout = 15000
                 c.readTimeout = 120000
@@ -198,10 +207,12 @@ class SignalChannel(
                         val o = try { JSONObject(line) } catch (e: Exception) { null } ?: continue
                         val ev = o.optString("event")
                         if (ev == "open") {
+                            ServerClock.update(app, o.optLong("time", 0L) * 1000L)
                             if (!opened) { opened = true; onOpen() }
                         } else if (ev == "message") {
+                            o.optString("id").takeIf { it.isNotEmpty() }?.let { lastId = it }
                             val t = o.optLong("time", 0L) * 1000L
-                            if (t > 0 && System.currentTimeMillis() - t > 90_000L) continue
+                            if (t > 0 && ServerClock.now() - t > 90_000L) continue
                             val m = Signal.decode(o, code) ?: continue
                             onMsg(m)
                         }
@@ -215,6 +226,7 @@ class SignalChannel(
                 conn = null
             }
             if (!running) break
+            if (droppedAt == 0L || lastId == null) droppedAt = ServerClock.now()
             try { Thread.sleep(backoff) } catch (e: InterruptedException) { break }
             backoff = minOf(backoff * 2, 30_000L)
         }

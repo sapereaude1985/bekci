@@ -199,7 +199,8 @@ class LiveActivity : ComponentActivity() {
                     JSONObject().put("t", "call").put("sid", mySid).put("ses", true)
                 ) { main.post { if (sid == mySid) fail("İstek gönderilemedi. İnternet bağlantını kontrol et.") } }
             },
-            onMsg = { m -> main.post { onSignal(m) } }
+            onMsg = { m -> main.post { onSignal(m) } },
+            app = applicationContext
         ).also { it.start() }
         main.postDelayed(offerTimeout, 40_000)
     }

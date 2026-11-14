@@ -377,3 +377,49 @@ object Gallery {
         }
     } catch (e: Exception) { null }
 }
+
+/**
+ * ntfy timestamps are server time. Phones (especially old ones used as cameras) can have a clock
+ * that is minutes off, so every "how old is this message" check goes through this corrected clock.
+ */
+object ServerClock {
+    @Volatile private var offset = 0L
+    @Volatile private var loaded = false
+
+    fun init(ctx: Context) {
+        if (loaded) return
+        offset = Prefs.p(ctx).getLong("saatFarki", 0L)
+        loaded = true
+    }
+
+    fun now(): Long = System.currentTimeMillis() + offset
+
+    fun update(ctx: Context?, serverMs: Long) {
+        if (serverMs <= 0) return
+        val o = serverMs - System.currentTimeMillis()
+        offset = o
+        loaded = true
+        try { ctx?.let { Prefs.p(it).edit().putLong("saatFarki", o).apply() } } catch (e: Exception) { }
+    }
+}
+
+/** Camera side of locked pairing, shared by the camera service and the camera screen. */
+object PairHost {
+    /** Returns true when this watcher was accepted (the caller then switches to the new key). */
+    fun handle(ctx: Context, m: org.json.JSONObject, qr: String): Boolean {
+        if (m.optString("t") != "pair") return false
+        val id = m.optString("id")
+        val key = m.optString("key")
+        if (id.isEmpty() || Pairing.normalize(key).length < 24) return false
+        val p = Prefs.p(ctx)
+        val reply = org.json.JSONObject().put("sid", id.take(8)).put("id", id)
+        if (p.getBoolean("bagli", false) && p.getString("izleyiciId", null) != id) {
+            Signal.send(Pairing.pairTopic(qr), qr, reply.put("t", "pair_no"))
+            return false
+        }
+        p.edit().putString("code", key).putBoolean("bagli", true).putString("izleyiciId", id)
+            .putString("izleyiciAd", m.optString("name").take(60)).apply()
+        Signal.send(Pairing.pairTopic(qr), qr, reply.put("t", "pair_ok"))
+        return true
+    }
+}
