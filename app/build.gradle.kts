@@ -11,8 +11,8 @@ android {
         applicationId = "com.bekci.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 18
-        versionName = "2.15"
+        versionCode = 19
+        versionName = "2.16"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
     compileOptions {

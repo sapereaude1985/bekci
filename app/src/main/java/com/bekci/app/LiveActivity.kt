@@ -75,6 +75,7 @@ import org.webrtc.RtpTransceiver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import org.webrtc.MediaStreamTrack as RtcTrack
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -89,6 +90,11 @@ class LiveActivity : ComponentActivity() {
     private var chan: SignalChannel? = null
     private var pc: PeerConnection? = null
     private var remoteAudio: AudioTrack? = null
+    private var remoteVideo: VideoTrack? = null
+    private var recorder: LiveRecorder? = null
+    private val recording = mutableStateOf(false)
+    private val recSince = mutableLongStateOf(0L)
+    private val recMax = Runnable { stopRecording("10 dakika doldu, kayıt otomatik durdu.") }
     private var sid = ""
     private var code = ""
     private var answered = false
@@ -165,7 +171,10 @@ class LiveActivity : ComponentActivity() {
                     onTalk = { setTalking(it) },
                     torchAvail = torchAvail.value,
                     torchOn = torchOn.value,
-                    onTorch = { toggleTorch() }
+                    onTorch = { toggleTorch() },
+                    recording = recording.value,
+                    recSince = recSince.longValue,
+                    onRecord = { toggleRecording() }
                 )
             }
         }
@@ -232,7 +241,7 @@ class LiveActivity : ComponentActivity() {
             override fun onTrack(transceiver: RtpTransceiver?) {
                 val tr = transceiver?.receiver?.track() ?: return
                 main.post {
-                    if (tr is VideoTrack) tr.addSink(renderer)
+                    if (tr is VideoTrack) { tr.addSink(renderer); remoteVideo = tr }
                     if (tr is AudioTrack) { remoteAudio = tr; tr.setEnabled(!muted.value) }
                 }
             }
@@ -317,7 +326,9 @@ class LiveActivity : ComponentActivity() {
         if (sendBye && sid.isNotEmpty() && code.isNotEmpty()) {
             Signal.send(Pairing.camInbox(code), code, JSONObject().put("t", "bye").put("sid", sid))
         }
+        stopRecording("Bağlantı bitti.")
         remoteAudio = null
+        remoteVideo = null
         talking.value = false
         canTalk.value = false
         torchAvail.value = false
@@ -328,6 +339,40 @@ class LiveActivity : ComponentActivity() {
         try { micSrc?.dispose() } catch (e: Exception) { }
         micTrack = null
         micSrc = null
+    }
+
+    private fun toggleRecording() {
+        if (recording.value) { stopRecording(null); return }
+        val v = remoteVideo ?: return
+        if (Build.VERSION.SDK_INT < 29 &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            storagePerm.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            toast("İzni verdikten sonra kayda tekrar bas.")
+            return
+        }
+        val a = remoteAudio
+        val rec = LiveRecorder(applicationContext, withAudio = a != null)
+        recorder = rec
+        v.addSink(rec)
+        try { a?.addSink(rec) } catch (e: Throwable) { }
+        recording.value = true
+        recSince.longValue = SystemClock.elapsedRealtime()
+        main.postDelayed(recMax, 10 * 60_000L)
+    }
+
+    private fun stopRecording(note: String?) {
+        val rec = recorder ?: return
+        recorder = null
+        main.removeCallbacks(recMax)
+        try { remoteVideo?.removeSink(rec) } catch (e: Exception) { }
+        try { remoteAudio?.removeSink(rec) } catch (e: Throwable) { }
+        recording.value = false
+        val app = applicationContext
+        rec.stop { ok ->
+            val msg = if (ok) "Video galeride Bekçi klasörüne kaydedildi." else "Video kaydedilemedi."
+            Toast.makeText(app, if (note != null) "$note $msg" else msg, Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun toggleTorch() {
@@ -410,7 +455,10 @@ private fun LiveScreen(
     onTalk: (Boolean) -> Unit,
     torchAvail: Boolean,
     torchOn: Boolean,
-    onTorch: () -> Unit
+    onTorch: () -> Unit,
+    recording: Boolean,
+    recSince: Long,
+    onRecord: () -> Unit
 ) {
     val glass = Color.Black.copy(alpha = 0.45f)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -436,7 +484,28 @@ private fun LiveScreen(
                 ) { Text("🔦", fontSize = 22.sp) }
                 Spacer(Modifier.width(10.dp))
             }
-            if (phase == LiveActivity.Phase.Live) LiveBadge(liveSince)
+            if (phase == LiveActivity.Phase.Live) {
+                FilledIconButton(
+                    onClick = onRecord,
+                    modifier = Modifier.size(48.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = if (recording) Color(0xFFE5484D) else glass,
+                        contentColor = Color.White
+                    )
+                ) {
+                    if (recording) Box(Modifier.size(16.dp).clip(RoundedCornerShape(3.dp)).background(Color.White))
+                    else Box(Modifier.size(18.dp).clip(CircleShape).background(Color(0xFFE5484D)))
+                }
+                Spacer(Modifier.width(10.dp))
+                LiveBadge(liveSince)
+            }
+        }
+
+        if (recording) {
+            RecBadge(
+                recSince,
+                Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 70.dp, end = 12.dp)
+            )
         }
 
         if (talking) {
@@ -542,5 +611,24 @@ private fun TalkButton(talking: Boolean, onTalk: (Boolean) -> Unit) {
         ) { Text("🎙", fontSize = 32.sp) }
         Spacer(Modifier.height(6.dp))
         Text(if (talking) "Bırak" else "Bas konuş", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun RecBadge(since: Long, modifier: Modifier) {
+    var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    LaunchedEffect(since) {
+        while (true) { now = SystemClock.elapsedRealtime(); delay(500) }
+    }
+    val s = ((now - since) / 1000).coerceAtLeast(0)
+    val blink = (now / 600) % 2 == 0L
+    Row(
+        modifier.clip(RoundedCornerShape(50)).background(Color(0xFFE5484D))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(9.dp).clip(CircleShape).background(if (blink) Color.White else Color.Transparent))
+        Spacer(Modifier.width(8.dp))
+        Text("KAYIT  " + "%02d:%02d".format(s / 60, s % 60), color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
     }
 }

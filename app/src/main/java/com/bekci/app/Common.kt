@@ -290,6 +290,36 @@ object Gallery {
         }
     }
 
+    /** Live recordings: Movies/Bekçi in the gallery. */
+    fun saveVideo(ctx: Context, src: File): Boolean {
+        val name = "bekci-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date()) + ".mp4"
+        return try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val v = ContentValues().apply {
+                    put(MediaStore.Video.Media.DISPLAY_NAME, name)
+                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/$ROOT")
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+                val r = ctx.contentResolver
+                val uri = r.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v) ?: return false
+                r.openOutputStream(uri)?.use { out -> src.inputStream().use { it.copyTo(out) } } ?: return false
+                r.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
+            } else {
+                if (ctx.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) return false
+                @Suppress("DEPRECATION")
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), ROOT)
+                dir.mkdirs()
+                val f = File(dir, name)
+                src.copyTo(f, overwrite = true)
+                MediaScannerConnection.scanFile(ctx, arrayOf(f.path), arrayOf("video/mp4"), null)
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     /** Deletes every photo in one sub-folder. Returns (deleted, ones Android must confirm itself). */
     fun deleteAll(ctx: Context, sub: String): Pair<Int, List<Uri>> {
         var n = 0
