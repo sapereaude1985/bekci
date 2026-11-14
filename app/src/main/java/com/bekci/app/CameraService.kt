@@ -23,6 +23,7 @@ import androidx.camera.core.Camera
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import org.json.JSONObject
+import java.util.Locale
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -84,6 +85,18 @@ class CameraService : LifecycleService() {
 
     // The phone itself being moved/bumped must not fire the flash.
     @Volatile private var deviceMovedAt = 0L
+    // Room climate: only some phones have these sensors.
+    @Volatile private var roomTemp = Float.NaN
+    @Volatile private var roomHum = Float.NaN
+    private val climate = object : SensorEventListener {
+        override fun onSensorChanged(e: SensorEvent) {
+            when (e.sensor.type) {
+                Sensor.TYPE_AMBIENT_TEMPERATURE -> roomTemp = e.values[0]
+                Sensor.TYPE_RELATIVE_HUMIDITY -> roomHum = e.values[0]
+            }
+        }
+        override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+    }
     private val grav = FloatArray(3)
     private var gravInit = false
     private val shake = object : SensorEventListener {
@@ -170,6 +183,8 @@ class CameraService : LifecycleService() {
             try {
                 val sm = getSystemService(SensorManager::class.java)
                 sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm.registerListener(shake, it, SensorManager.SENSOR_DELAY_NORMAL) }
+                sm.getDefaultSensor(Sensor.TYPE_AMBIENT_TEMPERATURE)?.let { sm.registerListener(climate, it, SensorManager.SENSOR_DELAY_NORMAL) }
+                sm.getDefaultSensor(Sensor.TYPE_RELATIVE_HUMIDITY)?.let { sm.registerListener(climate, it, SensorManager.SENSOR_DELAY_NORMAL) }
             } catch (e: Exception) { }
             startCamera()
             sig = SignalChannel(Pairing.camInbox(c), c, onOpen = {}, onMsg = { m -> main.post { onSignal(m) } })
@@ -387,13 +402,29 @@ class CameraService : LifecycleService() {
         else -> Notif.status(this, "Kamera açık", "Hareket algılama kapalı. Canlı izleme kullanılabilir.")
     }
 
+    /** "_<room °C>_<humidity %>_<phone/battery °C>", x = no sensor. Also kept locally for this phone's screen. */
+    private fun climateSuffix(): String {
+        var bt = Float.NaN
+        try {
+            val st = ContextCompat.registerReceiver(
+                this, null, IntentFilter(Intent.ACTION_BATTERY_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            val t = st?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
+            if (t != Int.MIN_VALUE) bt = t / 10f
+        } catch (e: Exception) { }
+        fun f(v: Float) = if (v.isNaN()) "x" else String.format(Locale.ROOT, "%.1f", v)
+        val s = "_${f(roomTemp)}_${f(roomHum)}_${f(bt)}"
+        Prefs.p(this).edit().putString("yerelIklim", s).putLong("yerelIklimAt", System.currentTimeMillis()).apply()
+        return s
+    }
+
     /** Full, silent status for the watcher: st_<battery>_<plugged>_<motion>_<sens>_<flash>. */
     private fun sendStatus() {
         val t = topic
         if (t.isEmpty()) return
         val (pct, chg) = batteryState()
         val msg = "st_${pct}_${if (chg) 1 else 0}_${if (motionOn) 1 else 0}_" +
-            "${Prefs.p(this).getInt("sens", 6)}_${if (flashAllowed()) 1 else 0}"
+            "${Prefs.p(this).getInt("sens", 6)}_${if (flashAllowed()) 1 else 0}" + climateSuffix()
         netExec.execute { try { Ntfy.postText(t, msg) } catch (e: Exception) { } }
     }
 
@@ -402,7 +433,7 @@ class CameraService : LifecycleService() {
         val t = topic
         if (t.isEmpty()) return
         val (pct, charging) = batteryState()
-        val msg = "hb_${pct}_${if (charging) 1 else 0}"
+        val msg = "hb_${pct}_${if (charging) 1 else 0}" + climateSuffix()
         netExec.execute { try { Ntfy.postText(t, msg) } catch (e: Exception) { } }
     }
 
@@ -608,7 +639,11 @@ class CameraService : LifecycleService() {
         running = false
         main.removeCallbacks(heartbeat)
         if (powerRegistered) { try { unregisterReceiver(power) } catch (e: Exception) { }; powerRegistered = false }
-        try { getSystemService(SensorManager::class.java).unregisterListener(shake) } catch (e: Exception) { }
+        try {
+            val sm = getSystemService(SensorManager::class.java)
+            sm.unregisterListener(shake)
+            sm.unregisterListener(climate)
+        } catch (e: Exception) { }
         Prefs.p(this).unregisterOnSharedPreferenceChangeListener(prefListener)
         sig?.stop()
         sig = null

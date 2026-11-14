@@ -173,6 +173,12 @@ class WatchService : Service() {
             val pct = parts.getOrNull(1)?.toIntOrNull() ?: -1
             val chg = parts.getOrNull(2) == "1"
             e.putBoolean("camHbSeen", true).putInt("camBattery", pct).putBoolean("camCharging", chg)
+            // climate fields: hb_p_c_T_H_B  /  st_p_c_m_s_f_T_H_B
+            val k = if (msg.startsWith("hb_")) 3 else 6
+            if (parts.size >= k + 3 && time >= p.getLong("camClimateAt", 0L)) {
+                e.putString("camRoomT", parts[k]).putString("camHum", parts[k + 1]).putString("camBatT", parts[k + 2])
+                    .putLong("camClimateAt", time)
+            }
             if (recent) {
                 if (pct in 0..14 && !chg && !p.getBoolean("camLowBatAlerted", false)) {
                     e.putBoolean("camLowBatAlerted", true)

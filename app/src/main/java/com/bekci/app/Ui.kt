@@ -156,6 +156,14 @@ fun HomeScreen() {
     val refreshing = statusReqAt > 0 && System.currentTimeMillis() - statusReqAt < 20_000 &&
         p.getLong("camLastSeen", 0L) < statusReqAt - 1000
     val camHealth = remember(tick) { camHealth(p, WatchService.running) }
+    val camClimate = remember(tick) {
+        climateFrom(p.getString("camRoomT", null), p.getString("camHum", null), p.getString("camBatT", null), p.getLong("camClimateAt", 0L))
+    }
+    val localClimate = remember(tick) {
+        val s = p.getString("yerelIklim", null)?.split("_")
+        if (s == null || s.size < 4 || !CameraService.running) null
+        else climateFrom(s[1], s[2], s[3], p.getLong("yerelIklimAt", 0L))
+    }
     val camFlash = remember(tick) { p.getBoolean("camFlash", true) }
     val flashPending = remember(tick) { p.getLong("camFlashPending", 0L) }
 
@@ -408,6 +416,8 @@ fun HomeScreen() {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Header(role)
+            if (role == ROLE_WATCH && paired) ClimateCard(camClimate, "Evdeki kameranın olduğu ortam")
+            if (role == ROLE_CAM) ClimateCard(localClimate, "Bu odanın ortamı")
             when (role) {
                 ROLE_CAM -> CameraHome(
                     camOn = camOn, code = code, sens = sens, shareAudio = shareAudio, batteryOk = batteryOk,
@@ -1088,5 +1098,67 @@ private fun HealthCard(h: CamHealth, refreshing: Boolean, onRefresh: () -> Unit)
             if (refreshing) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
             else IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, contentDescription = "Durumu yenile") }
         }
+    }
+}
+
+/** Reading parsed from "T_H_B" strings; NaN = no sensor. */
+data class Climate(val room: Float, val hum: Float, val phone: Float, val at: Long)
+
+fun climateFrom(roomT: String?, hum: String?, batT: String?, at: Long): Climate? {
+    if (at <= 0L || batT == null) return null
+    fun v(s: String?) = s?.toFloatOrNull() ?: Float.NaN
+    return Climate(v(roomT), v(hum), v(batT), at)
+}
+
+private fun trNum(v: Float) = String.format(java.util.Locale("tr", "TR"), "%.1f", v)
+
+@Composable
+fun ClimateCard(c: Climate?, title: String) {
+    if (c == null) return
+    val cs = MaterialTheme.colorScheme
+    val roomKnown = !c.room.isNaN()
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+            Text(title, style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "🌡 " + (if (roomKnown) "${trNum(c.room)} °C" else if (!c.phone.isNaN()) "~${trNum(c.phone)} °C" else "—"),
+                        style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        if (roomKnown) "Oda sıcaklığı" else "Telefon sıcaklığı",
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant
+                    )
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "💧 " + (if (!c.hum.isNaN()) "%${c.hum.roundToInt()}" else "—"),
+                        style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        if (!c.hum.isNaN()) "Nem" else "Nem sensörü yok",
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                (if (roomKnown) "" else "Bu telefonda oda sıcaklığı sensörü yok; gösterilen telefonun kendi sıcaklığı, oda genelde birkaç derece daha serindir. ") +
+                    "Ölçüm: " + agoText(System.currentTimeMillis() - c.at),
+                style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant
+            )
+        }
+    }
+}
+
+private fun agoText(ms: Long): String {
+    val m = (ms / 60_000L).coerceAtLeast(0)
+    return when {
+        m < 1 -> "az önce"
+        m < 60 -> "$m dk önce"
+        m < 48 * 60 -> "${m / 60} sa önce"
+        else -> "${m / 1440} gün önce"
     }
 }
