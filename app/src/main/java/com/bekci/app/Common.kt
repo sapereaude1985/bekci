@@ -290,13 +290,29 @@ object Gallery {
         }
     }
 
-    fun recent(ctx: Context, limit: Int): List<Uri> {
+    /** Deletes every photo in one sub-folder. Returns (deleted, ones Android must confirm itself). */
+    fun deleteAll(ctx: Context, sub: String): Pair<Int, List<Uri>> {
+        var n = 0
+        val stuck = ArrayList<Uri>()
+        for (u in recent(ctx, Int.MAX_VALUE, sub)) {
+            try {
+                if (ctx.contentResolver.delete(u, null, null) > 0) n++ else stuck += u
+            } catch (e: SecurityException) {
+                stuck += u
+            } catch (e: Exception) { }
+        }
+        if (n > 0) Prefs.p(ctx).edit().putLong("photoSaved", System.currentTimeMillis()).apply()
+        return n to stuck
+    }
+
+    fun recent(ctx: Context, limit: Int, sub: String? = null): List<Uri> {
         val col = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val out = ArrayList<Uri>()
         @Suppress("DEPRECATION")
         val sel = if (Build.VERSION.SDK_INT >= 29) "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
         else "${MediaStore.Images.Media.DATA} LIKE ?"
-        val arg = if (Build.VERSION.SDK_INT >= 29) "Pictures/$ROOT/%" else "%/Pictures/$ROOT/%"
+        val dir = if (sub == null) "Pictures/$ROOT/" else "Pictures/$ROOT/$sub/"
+        val arg = if (Build.VERSION.SDK_INT >= 29) "$dir%" else "%/$dir%"
         try {
             ctx.contentResolver.query(
                 col, arrayOf(MediaStore.Images.Media._ID), sel, arrayOf(arg),

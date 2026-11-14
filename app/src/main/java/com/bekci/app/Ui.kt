@@ -10,6 +10,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -160,10 +161,43 @@ fun HomeScreen() {
 
     var saveGallery by remember { mutableStateOf(p.getBoolean("galeri", true)) }
     var photos by remember { mutableStateOf<List<Pair<Uri, ImageBitmap>>>(emptyList()) }
+    var motionCount by remember { mutableIntStateOf(0) }
+    var askDelete by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
     val photoKey = remember(tick) { p.getLong("photoSaved", 0L) }
     LaunchedEffect(photoKey, role) {
-        if (role == ROLE_WATCH) photos = withContext(Dispatchers.IO) {
-            Gallery.recent(ctx, 9).mapNotNull { u -> Gallery.thumb(ctx, u)?.let { u to it.asImageBitmap() } }
+        if (role == ROLE_WATCH) {
+            photos = withContext(Dispatchers.IO) {
+                Gallery.recent(ctx, 9).mapNotNull { u -> Gallery.thumb(ctx, u)?.let { u to it.asImageBitmap() } }
+            }
+            motionCount = withContext(Dispatchers.IO) { Gallery.recent(ctx, 100_000, Gallery.MOTION).size }
+        }
+    }
+    val deleteRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
+        p.edit().putLong("photoSaved", System.currentTimeMillis()).apply()
+        tick++
+        if (r.resultCode == android.app.Activity.RESULT_OK) say("Hareket fotoğrafları silindi.")
+    }
+    fun deleteMotionPhotos() {
+        deleting = true
+        scope.launch {
+            val (n, stuck) = withContext(Dispatchers.IO) { Gallery.deleteAll(ctx, Gallery.MOTION) }
+            // "Son hareket" card and photo notifications go too.
+            File(ctx.filesDir, "last.jpg").delete()
+            p.edit().putLong("lastTime", 0L).putLong("photoSaved", System.currentTimeMillis()).apply()
+            try {
+                val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
+                nm.activeNotifications.filter { it.id != 1 && it.id != 2 }.forEach { nm.cancel(it.id) }
+            } catch (e: Exception) { }
+            deleting = false
+            tick++
+            if (stuck.isNotEmpty() && Build.VERSION.SDK_INT >= 30) {
+                // Photos from an earlier install: Android asks for confirmation itself.
+                val pi = MediaStore.createDeleteRequest(ctx.contentResolver, stuck)
+                deleteRequest.launch(androidx.activity.result.IntentSenderRequest.Builder(pi.intentSender).build())
+            } else if (stuck.isNotEmpty()) {
+                say("$n fotoğraf silindi; ${stuck.size} tanesi silinemedi. Galeriden silebilirsin.")
+            } else say("$n hareket fotoğrafı silindi.")
         }
     }
     fun openPhoto(u: Uri) {
@@ -440,6 +474,8 @@ fun HomeScreen() {
                     onUpdateHome = { askHome = true },
                     onPin = { pinShortcut() },
                     photos = photos, onOpenPhoto = { openPhoto(it) },
+                    motionCount = motionCount, deleting = deleting,
+                    onDeleteMotion = { askDelete = true },
                     saveGallery = saveGallery,
                     onSaveGallery = {
                         if (it && Build.VERSION.SDK_INT < 29 && !granted(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
@@ -520,6 +556,27 @@ fun HomeScreen() {
                 }) { Text("Devam") }
             },
             dismissButton = { TextButton(onClick = { askBg = false }) { Text("Vazgeç") } }
+        )
+    }
+
+    if (askDelete) {
+        AlertDialog(
+            onDismissRequest = { askDelete = false },
+            title = { Text("Tüm hareket fotoğrafları silinsin mi?") },
+            text = {
+                Text(
+                    "Galerideki Bekçi › Hareket klasöründeki $motionCount fotoğraf kalıcı olarak silinecek. " +
+                        "“Son hareket” görüntüsü ve fotoğraflı bildirimler de kaldırılacak. Bu işlem geri alınamaz.\n\n" +
+                        "Canlı yayından kaydettiğin fotoğraflar silinmez."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { askDelete = false; deleteMotionPhotos() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Tümünü sil") }
+            },
+            dismissButton = { TextButton(onClick = { askDelete = false }) { Text("Vazgeç") } }
         )
     }
 
@@ -781,6 +838,7 @@ private fun WatcherHome(
     camSens: Float, sensStatus: String, onSens: (Float) -> Unit, onSensDone: () -> Unit,
     fenceOn: Boolean, fenceBusy: Boolean, onFence: (Boolean) -> Unit, onUpdateHome: () -> Unit, onPin: () -> Unit,
     photos: List<Pair<Uri, ImageBitmap>>, onOpenPhoto: (Uri) -> Unit,
+    motionCount: Int, deleting: Boolean, onDeleteMotion: () -> Unit,
     saveGallery: Boolean, onSaveGallery: (Boolean) -> Unit,
     onScan: () -> Unit, onManual: () -> Unit, onLive: () -> Unit, onToggle: () -> Unit,
     onBattery: () -> Unit, onChangeRole: () -> Unit
@@ -934,6 +992,18 @@ private fun WatcherHome(
                     }
                     repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
+            }
+        }
+        if (motionCount > 0 || deleting) {
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(
+                onClick = onDeleteMotion,
+                enabled = !deleting,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = c.error)
+            ) {
+                if (deleting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = c.error)
+                else Text("Hareket fotoğraflarının tümünü sil ($motionCount)")
             }
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
