@@ -133,6 +133,10 @@ fun HomeScreen() {
     var shareAudio by remember { mutableStateOf(p.getBoolean("ses", true)) }
     var nightFlash by remember { mutableStateOf(p.getBoolean("geceFlas", true)) }
     var manualOpen by remember { mutableStateOf(false) }
+    var linking by remember { mutableStateOf(false) }
+    var askUnlink by remember { mutableStateOf(false) }
+    var askReset by remember { mutableStateOf(false) }
+    var baglanti by remember { mutableStateOf(p.getBoolean("baglanti", false)) }
     var confirmNew by remember { mutableStateOf(false) }
 
     var tick by remember { mutableIntStateOf(0) }
@@ -143,6 +147,16 @@ fun HomeScreen() {
         ctx.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)
     }
     val lastTime = remember(tick) { p.getLong("lastTime", 0L) }
+    val bagli = remember(tick) { p.getBoolean("bagli", false) }
+    val izleyiciAd = remember(tick) { p.getString("izleyiciAd", null) }
+    val qrCode = remember(tick, code) { Prefs.qrCode(ctx) ?: code }
+    // The camera can release us (WatchService then clears the pairing): follow it here.
+    LaunchedEffect(tick) {
+        if (role == ROLE_WATCH) {
+            val pp = p.getBoolean("paired", false)
+            if (pp != paired) { paired = pp; code = Prefs.code(ctx) ?: ""; baglanti = p.getBoolean("baglanti", false) }
+        }
+    }
     var motion by remember { mutableStateOf(p.getBoolean("hareket", true)) }
     LaunchedEffect(tick) { motion = p.getBoolean("hareket", true) }
     val camMotion = remember(tick) { p.getBoolean("camMotion", true) }
@@ -277,19 +291,72 @@ fun HomeScreen() {
             ContextCompat.startForegroundService(ctx, Intent(ctx, WatchService::class.java).putExtra(WatchService.EXTRA_FRESH, true))
         }
     }
+    /**
+     * Locked pairing: the QR code is only for first contact. This phone makes a fresh private key and
+     * offers it; the camera accepts it only if no other watcher is linked.
+     */
+    fun startLink(c: String, quiet: Boolean) {
+        if (linking) return
+        linking = true
+        val id = Prefs.deviceId(ctx)
+        val key = Pairing.newLinkKey()
+        var done = false
+        var ch: SignalChannel? = null
+        fun end(msg: String?) {
+            if (done) return
+            done = true
+            ch?.stop()
+            linking = false
+            if (msg != null) say(msg)
+        }
+        ch = SignalChannel(
+            Pairing.pairTopic(c), c,
+            onOpen = {
+                Signal.send(
+                    Pairing.pairTopic(c), c,
+                    JSONObject().put("t", "pair").put("sid", id.take(8)).put("id", id).put("key", key)
+                        .put("name", (Build.MANUFACTURER + " " + Build.MODEL).trim())
+                ) { scope.launch { end(if (quiet) null else "İstek gönderilemedi. İnternet bağlantını kontrol et.") } }
+            },
+            onMsg = { m ->
+                if (m.optString("id") == id) {
+                    val t = m.optString("t")
+                    if (t == "pair_ok") scope.launch {
+                        if (!done) {
+                            p.edit().putString("code", key).putBoolean("paired", true).putBoolean("baglanti", true)
+                                .remove("lastId").remove("camHbSeen").apply()
+                            code = key
+                            paired = true
+                            baglanti = true
+                            end("Evdeki kameraya bağlandı. Eşleştirme artık bu telefona kilitli.")
+                            restartIfRunning()
+                        }
+                    }
+                    if (t == "pair_no") scope.launch {
+                        end("Bu kamera başka bir izleyici telefona bağlı. O telefon eşleştirmeyi kaldırmalı ya da kamera telefonunda “Eşleştirmeyi sıfırla”ya basılmalı.")
+                    }
+                }
+            }
+        )
+        ch.start()
+        scope.launch {
+            delay(35_000)
+            end(if (quiet) null else "Evdeki kamera yanıt vermedi. Kamera telefonunda izlemenin açık olduğundan emin ol.")
+        }
+    }
     fun applyCode(raw: String): Boolean {
         val n = Pairing.normalize(raw.trim().removePrefix(QR_PREFIX))
         if (n.length != 12) return false
-        val pretty = Pairing.pretty(n)
-        p.edit().putString("code", pretty).putBoolean("paired", true).remove("lastId").apply()
-        code = pretty
-        paired = true
-        restartIfRunning()
+        startLink(Pairing.pretty(n), quiet = false)
         return true
+    }
+    // Upgrade from the old shared-code pairing: link automatically once.
+    LaunchedEffect(role) {
+        if (role == ROLE_WATCH && paired && !baglanti && Pairing.normalize(code).length == 12) startLink(code, quiet = true)
     }
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { r ->
         val raw = r.contents ?: return@rememberLauncherForActivityResult
-        if (applyCode(raw)) say("Evdeki telefona bağlandı.") else say("Bu bir Bekçi QR kodu değil.")
+        if (applyCode(raw)) say("Evdeki kameraya bağlanılıyor…") else say("Bu bir Bekçi QR kodu değil.")
     }
     fun scan() {
         scanLauncher.launch(
@@ -399,6 +466,38 @@ fun HomeScreen() {
             say("Kısayol eklenemedi.")
         }
     }
+    fun unlink() {
+        val c = code
+        scope.launch {
+            val ok = c.isNotEmpty() && withContext(Dispatchers.IO) {
+                Signal.sendSync(Pairing.camInbox(c), c, JSONObject().put("t", "unpair").put("sid", UUID.randomUUID().toString().take(8)))
+            }
+            ctx.stopService(Intent(ctx, WatchService::class.java))
+            if (fenceOn) stopFence()
+            p.edit().putBoolean("paired", false).putBoolean("baglanti", false).remove("code").remove("lastId")
+                .remove("camHbSeen").apply()
+            code = ""
+            paired = false
+            baglanti = false
+            say(
+                if (ok) "Eşleştirme kaldırıldı. Kamera artık yeni bir izleyiciye açık."
+                else "Bu telefondan kaldırıldı ama kameraya ulaşılamadı. Kamera telefonunda “Eşleştirmeyi sıfırla”ya basman gerekebilir."
+            )
+        }
+    }
+    fun resetPairing() {
+        val old = Prefs.code(ctx) ?: ""
+        val n = Pairing.newCode()
+        p.edit().putBoolean("bagli", false).remove("izleyiciId").remove("izleyiciAd")
+            .putString("qrCode", n).putString("code", n).apply()
+        code = n
+        // If monitoring runs, the camera service tells the old watcher itself.
+        if (!CameraService.running && old.isNotEmpty()) {
+            Thread { try { Ntfy.postText(Pairing.topic(old), "unpaired") } catch (e: Exception) { } }.start()
+        }
+        tick++
+        say("Eşleştirme sıfırlandı. İzleyici yeni QR kodu tarayarak bağlanabilir.")
+    }
     fun pickRole(r: String?) {
         if (r == null) {
             if (fenceOn) stopFence()
@@ -420,7 +519,8 @@ fun HomeScreen() {
             if (role == ROLE_CAM) ClimateCard(localClimate, "Bu odanın ortamı")
             when (role) {
                 ROLE_CAM -> CameraHome(
-                    camOn = camOn, code = code, sens = sens, shareAudio = shareAudio, batteryOk = batteryOk,
+                    camOn = camOn, code = qrCode, sens = sens, shareAudio = shareAudio, batteryOk = batteryOk,
+                    bagli = bagli, izleyiciAd = izleyiciAd, onReset = { askReset = true },
                     motion = motion,
                     nightFlash = nightFlash,
                     onNightFlash = { nightFlash = it; p.edit().putBoolean("geceFlas", it).apply() },
@@ -447,6 +547,7 @@ fun HomeScreen() {
                 )
                 ROLE_WATCH -> WatcherHome(
                     paired = paired, watchOn = watchOn, code = code, lastTime = lastTime, batteryOk = batteryOk,
+                    linking = linking, baglanti = baglanti, onUnlink = { askUnlink = true },
                     camMotion = camMotion,
                     camHealth = camHealth,
                     refreshing = refreshing,
@@ -537,7 +638,7 @@ fun HomeScreen() {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    if (applyCode(text)) { manualOpen = false; say("Evdeki telefona bağlandı.") } else err = true
+                    if (applyCode(text)) { manualOpen = false; say("Evdeki kameraya bağlanılıyor…") } else err = true
                 }) { Text("Bağlan") }
             },
             dismissButton = { TextButton(onClick = { manualOpen = false }) { Text("Vazgeç") } }
@@ -590,15 +691,45 @@ fun HomeScreen() {
         )
     }
 
+    if (askUnlink) {
+        AlertDialog(
+            onDismissRequest = { askUnlink = false },
+            title = { Text("Eşleştirme kaldırılsın mı?") },
+            text = { Text("Bu telefon artık uyarı alamaz ve canlı izleyemez. Evdeki kamera yeni bir QR kod oluşturur; tekrar bağlanmak için onu taraman gerekir.") },
+            confirmButton = {
+                TextButton(
+                    onClick = { askUnlink = false; unlink() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Kaldır") }
+            },
+            dismissButton = { TextButton(onClick = { askUnlink = false }) { Text("Vazgeç") } }
+        )
+    }
+
+    if (askReset) {
+        AlertDialog(
+            onDismissRequest = { askReset = false },
+            title = { Text("Eşleştirme sıfırlansın mı?") },
+            text = { Text("Bağlı izleyici telefonun erişimi hemen kesilir. Yeni bir QR kod oluşur; izleyici onu tarayarak yeniden bağlanabilir.") },
+            confirmButton = {
+                TextButton(
+                    onClick = { askReset = false; resetPairing() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Sıfırla") }
+            },
+            dismissButton = { TextButton(onClick = { askReset = false }) { Text("Vazgeç") } }
+        )
+    }
+
     if (confirmNew) {
         AlertDialog(
             onDismissRequest = { confirmNew = false },
             title = { Text("Yeni kod oluşturulsun mu?") },
-            text = { Text("İzleyici telefonun yeni QR kodu yeniden taraması gerekecek. Eski kodla bağlı telefon artık uyarı alamaz.") },
+            text = { Text("Eski QR kod geçersiz olur; izleyici telefon yeni QR kodu tarayarak bağlanır.") },
             confirmButton = {
                 TextButton(onClick = {
                     val n = Pairing.newCode()
-                    p.edit().putString("code", n).remove("lastId").apply()
+                    p.edit().putString("code", n).putString("qrCode", n).remove("lastId").apply()
                     code = n
                     confirmNew = false
                     restartIfRunning()
@@ -759,6 +890,7 @@ private fun CameraHome(
     camOn: Boolean, code: String, sens: Float, shareAudio: Boolean, batteryOk: Boolean,
     motion: Boolean, onMotion: (Boolean) -> Unit,
     nightFlash: Boolean, onNightFlash: (Boolean) -> Unit,
+    bagli: Boolean, izleyiciAd: String?, onReset: () -> Unit,
     onToggle: () -> Unit, onNewCode: () -> Unit, onSens: (Float) -> Unit, onSensDone: () -> Unit,
     onAudio: (Boolean) -> Unit, onBattery: () -> Unit, onPin: () -> Unit, onChangeRole: () -> Unit
 ) {
@@ -778,9 +910,32 @@ private fun CameraHome(
         onAction = onToggle
     )
 
-    Section("İzleyici telefonu bağla") {
+    if (bagli) Section("Bağlı izleyici") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("🔒", fontSize = 26.sp)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(izleyiciAd ?: "İzleyici telefon", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Eşleştirme kilitli: başka bir telefon bu kamerayı ekleyemez.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        OutlinedButton(
+            onClick = onReset,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+        ) { Text("Eşleştirmeyi sıfırla") }
+        Spacer(Modifier.height(6.dp))
         Text(
-            "Yanındaki telefonda Bekçi’yi aç, “İzleyici”yi seç ve bu QR kodu tarat.",
+            "İzleyici uygulamayı sildiyse ya da telefonunu değiştirdiyse bunu kullan.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    } else Section("İzleyici telefonu bağla") {
+        Text(
+            "Yanındaki telefonda Bekçi’yi aç, “İzleyici”yi seç ve bu QR kodu tarat. İlk tarayan telefon bağlanır ve eşleştirme ona kilitlenir. Bağlanmak için bu telefonda izlemenin açık olması gerekir.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -842,6 +997,7 @@ private fun CameraHome(
 @Composable
 private fun WatcherHome(
     paired: Boolean, watchOn: Boolean, code: String, lastTime: Long, batteryOk: Boolean,
+    linking: Boolean, baglanti: Boolean, onUnlink: () -> Unit,
     camMotion: Boolean, motionStatus: String, onMotion: (Boolean) -> Unit,
     camHealth: CamHealth, refreshing: Boolean, onRefresh: () -> Unit,
     camFlash: Boolean, flashStatus: String, onFlash: (Boolean) -> Unit,
@@ -865,8 +1021,16 @@ private fun WatcherHome(
                 Spacer(Modifier.height(6.dp))
                 Text("Evdeki telefonda Bekçi’yi açıp “Evdeki kamera”yı seç. Ekrana gelen QR kodu bu telefonla tara.")
                 Spacer(Modifier.height(18.dp))
-                Button(onClick = onScan, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("QR kodu tara") }
-                TextButton(onClick = onManual, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Kodu elle gir") }
+                if (linking) {
+                    Row(Modifier.fillMaxWidth().height(54.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text("Evdeki kameraya bağlanılıyor…")
+                    }
+                } else {
+                    Button(onClick = onScan, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("QR kodu tara") }
+                    TextButton(onClick = onManual, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Kodu elle gir") }
+                }
             }
         }
         TextButton(onClick = onChangeRole) { Text("Bu telefonun görevini değiştir") }
@@ -1024,7 +1188,11 @@ private fun WatcherHome(
     }
 
     Section("Ayarlar") {
-        SettingRow("Eşleştirme", code) { TextButton(onClick = onScan) { Text("Yeniden tara") } }
+        if (baglanti) SettingRow("Eşleştirme", "🔒 Evdeki kameraya kilitli bağlı") {
+            TextButton(onClick = onUnlink, colors = ButtonDefaults.textButtonColors(contentColor = c.error)) { Text("Kaldır") }
+        } else SettingRow("Eşleştirme", if (linking) "Kilitli eşleştirmeye geçiliyor…" else code) {
+            TextButton(onClick = onScan) { Text("Yeniden tara") }
+        }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         BatteryRow(batteryOk, onBattery)
         HorizontalDivider(Modifier.padding(vertical = 12.dp))

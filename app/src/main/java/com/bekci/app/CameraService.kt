@@ -73,6 +73,7 @@ class CameraService : LifecycleService() {
     private var live: CamLive? = null
     private var liveSid = ""
     private var micOk = false
+    private var pairSig: SignalChannel? = null
     @Volatile private var motionOn = true
 
     // ---- torch / night ----
@@ -126,6 +127,7 @@ class CameraService : LifecycleService() {
         if (key == "hareket") main.post { applyMotion(sp.getBoolean("hareket", true)) }
         if (key == "sens") main.post { applySens(sp.getInt("sens", 6)) }
         if (key == "geceFlas") main.post { applyFlashSetting(sp.getBoolean("geceFlas", true)) }
+        if (key == "bagli" && !sp.getBoolean("bagli", false)) main.post { onUnbound() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -189,6 +191,7 @@ class CameraService : LifecycleService() {
             startCamera()
             sig = SignalChannel(Pairing.camInbox(c), c, onOpen = {}, onMsg = { m -> main.post { onSignal(m) } })
                 .also { it.start() }
+            startPairListener()
             val t = topic
             netExec.execute {
                 try { Ntfy.postText(t, "start") } catch (e: Exception) { }
@@ -346,6 +349,12 @@ class CameraService : LifecycleService() {
                 if (!on) torchOffUnlessLive() else sendStatus()
             }
             "status" -> sendStatus()
+            "unpair" -> {
+                // The paired watcher released us: new QR, open for a new watcher.
+                val n = Pairing.newCode()
+                Prefs.p(this).edit().putBoolean("bagli", false).remove("izleyiciId").remove("izleyiciAd")
+                    .putString("qrCode", n).putString("code", n).apply()
+            }
             "sens" -> {
                 val v = m.optInt("v", 6).coerceIn(1, 10)
                 val p = Prefs.p(this)
@@ -416,6 +425,59 @@ class CameraService : LifecycleService() {
         val s = "_${f(roomTemp)}_${f(roomHum)}_${f(bt)}"
         Prefs.p(this).edit().putString("yerelIklim", s).putLong("yerelIklimAt", System.currentTimeMillis()).apply()
         return s
+    }
+
+    // ---------- locked pairing ----------
+
+    /** Listens on the QR code's channel: first watcher to ask gets linked, others are refused. */
+    private fun startPairListener() {
+        pairSig?.stop()
+        val p = Prefs.p(this)
+        val qr = p.getString("qrCode", null) ?: code.also { p.edit().putString("qrCode", it).apply() }
+        pairSig = SignalChannel(Pairing.pairTopic(qr), qr, onOpen = {}, onMsg = { m -> main.post { onPair(m, qr) } })
+            .also { it.start() }
+    }
+
+    private fun onPair(m: JSONObject, qr: String) {
+        if (!running || m.optString("t") != "pair") return
+        val id = m.optString("id")
+        val key = m.optString("key")
+        if (id.isEmpty() || Pairing.normalize(key).length < 24) return
+        val p = Prefs.p(this)
+        val reply = JSONObject().put("sid", id.take(8)).put("id", id)
+        if (p.getBoolean("bagli", false) && p.getString("izleyiciId", null) != id) {
+            Signal.send(Pairing.pairTopic(qr), qr, reply.put("t", "pair_no"))
+            return
+        }
+        p.edit().putString("code", key).putBoolean("bagli", true).putString("izleyiciId", id)
+            .putString("izleyiciAd", m.optString("name").take(60)).apply()
+        Signal.send(Pairing.pairTopic(qr), qr, reply.put("t", "pair_ok"))
+        main.postDelayed({ rekey() }, 1200L)
+    }
+
+    /** Unbound (from this phone's screen or by the watcher): tell the old link, switch to the new QR code. */
+    private fun onUnbound() {
+        if (!running) return
+        val old = topic
+        if (old.isNotEmpty()) netExec.execute { try { Ntfy.postText(old, "unpaired") } catch (e: Exception) { } }
+        startPairListener()
+        rekey()
+    }
+
+    /** Switch every channel to the current active code. */
+    private fun rekey() {
+        if (!running) return
+        val c = Prefs.code(this) ?: return
+        if (c == code) return
+        live?.end("eşleştirme değişti")
+        sig?.stop()
+        code = c
+        topic = Pairing.topic(c)
+        sig = SignalChannel(Pairing.camInbox(c), c, onOpen = {}, onMsg = { m -> main.post { onSignal(m) } })
+            .also { it.start() }
+        val t = topic
+        netExec.execute { try { Ntfy.postText(t, "start") } catch (e: Exception) { } }
+        main.postDelayed({ sendStatus() }, 1500L)
     }
 
     /** Full, silent status for the watcher: st_<battery>_<plugged>_<motion>_<sens>_<flash>. */
@@ -647,6 +709,8 @@ class CameraService : LifecycleService() {
         Prefs.p(this).unregisterOnSharedPreferenceChangeListener(prefListener)
         sig?.stop()
         sig = null
+        pairSig?.stop()
+        pairSig = null
         live?.end("kamera kapandı")
         live = null
         val t = topic

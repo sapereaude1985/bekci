@@ -42,6 +42,18 @@ import javax.crypto.spec.SecretKeySpec
 object Prefs {
     fun p(c: Context): SharedPreferences = c.getSharedPreferences("bekci", Context.MODE_PRIVATE)
     fun code(c: Context): String? = p(c).getString("code", null)
+
+    /** Camera: the code shown in the QR (only for first contact). Falls back to the active code. */
+    fun qrCode(c: Context): String? = p(c).getString("qrCode", null) ?: if (!p(c).getBoolean("bagli", false)) code(c) else null
+
+    /** Random, stable per install: identifies this watcher to the camera. */
+    fun deviceId(c: Context): String {
+        val p = p(c)
+        p.getString("cihazId", null)?.let { return it }
+        val id = java.util.UUID.randomUUID().toString().replace("-", "")
+        p.edit().putString("cihazId", id).apply()
+        return id
+    }
 }
 
 /**
@@ -67,6 +79,10 @@ object Pairing {
         MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
 
     fun camInbox(code: String): String = topic(code) + "_k"
+    /** First-contact channel derived from the QR code. */
+    fun pairTopic(code: String): String = topic(code) + "_e"
+    /** Private link key the watcher creates when pairing (120 bits). */
+    fun newLinkKey(): String = newCode() + "-" + newCode()
     fun watchInbox(code: String): String = topic(code) + "_i"
 
     fun topic(code: String): String =

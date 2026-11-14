@@ -109,6 +109,15 @@ class WatchService : Service() {
         val att = o.optJSONObject("attachment")
         seen(time, msg, att == null)
         if (att == null && msg.startsWith("hb_")) return
+        if (att == null && msg == "unpaired") {
+            if (System.currentTimeMillis() - time < 24 * 3600_000L) {
+                Prefs.p(this).edit().putBoolean("paired", false).putBoolean("baglanti", false).remove("code").apply()
+                Notif.alert(this, "Evdeki kamera eşleştirmeyi kaldırdı", "Yeniden bağlanmak için kameradaki yeni QR kodu tara.", null, true)
+                running = false
+                stopSelf()
+            }
+            return
+        }
         if (att == null && msg.startsWith("st_")) {
             // Silent status report (on request / when alerts are turned on): no notification.
             val f = msg.split("_")
