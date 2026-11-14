@@ -65,6 +65,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
 
-    implementation("io.getstream:stream-webrtc-android:1.1.3")
+    implementation("io.getstream:stream-webrtc-android:1.3.8")
     implementation("com.google.android.gms:play-services-location:21.3.0")
 }
