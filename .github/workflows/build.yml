@@ -31,7 +31,15 @@ jobs:
       - name: Derle
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: gradle assembleRelease --no-daemon
+        shell: bash
+        run: |
+          set +e
+          gradle assembleRelease --no-daemon 2>&1 | tee build.log
+          st=${PIPESTATUS[0]}
+          if [ $st -ne 0 ]; then
+            grep -E "^e: |error:|What went wrong|Unresolved|Could not" -A2 build.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+          fi
+          exit $st
 
       - name: APK'yı yeniden adlandır
         run: cp app/build/outputs/apk/release/app-release.apk bekci.apk
