@@ -954,7 +954,7 @@ private fun camHealth(p: android.content.SharedPreferences, watchOn: Boolean): C
     if (!p.getBoolean("camRunning", false)) return CamHealth(0, "Kamera kapalı", "Durduruldu · ${ago(gap)}")
     val pct = p.getInt("camBattery", -1)
     val chg = p.getBoolean("camCharging", false)
-    val bat = if (pct >= 0) " · Pil %$pct" + (if (chg) ", şarjda" else ", şarjda değil") else ""
+    val bat = if (pct >= 0) " · Pil %$pct" + (if (chg) ", şarja takılı" else ", şarja takılı değil") else ""
     return when {
         gap > WatchService.OFFLINE_MS -> CamHealth(2, "Çevrimdışı", "Son sinyal ${ago(gap)}$bat")
         pct in 0..20 && !chg -> CamHealth(3, "Çevrimiçi, pil azalıyor", "Son sinyal ${ago(gap)}$bat")

@@ -160,6 +160,14 @@ class CameraService : LifecycleService() {
             }
             Prefs.p(this).registerOnSharedPreferenceChangeListener(prefListener)
             try {
+                val f = IntentFilter().apply {
+                    addAction(Intent.ACTION_POWER_CONNECTED)
+                    addAction(Intent.ACTION_POWER_DISCONNECTED)
+                }
+                ContextCompat.registerReceiver(this, power, f, ContextCompat.RECEIVER_NOT_EXPORTED)
+                powerRegistered = true
+            } catch (e: Exception) { }
+            try {
                 val sm = getSystemService(SensorManager::class.java)
                 sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm.registerListener(shake, it, SensorManager.SENSOR_DELAY_NORMAL) }
             } catch (e: Exception) { }
@@ -382,18 +390,54 @@ class CameraService : LifecycleService() {
     private fun sendHeartbeat() {
         val t = topic
         if (t.isEmpty()) return
-        var pct = -1
-        var charging = false
-        try {
-            pct = getSystemService(BatteryManager::class.java).getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            val st = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            charging = (st?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
-        } catch (e: Exception) { }
+        val (pct, charging) = batteryState()
         val msg = "hb_${pct}_${if (charging) 1 else 0}"
         netExec.execute { try { Ntfy.postText(t, msg) } catch (e: Exception) { } }
     }
 
     /** Motion photos may use the flash only while detection is on and the watcher actually gets alerts. */
+    /**
+     * Battery % and "on the charger". Read three independent ways, because one of them fails
+     * silently on some phones, and phones with battery protection (charging held at 80-85 %)
+     * report "not charging" even while plugged in — that still counts as on the charger here.
+     */
+    private fun batteryState(): Pair<Int, Boolean> {
+        var pct = -1
+        var plugged = false
+        val bm = try { getSystemService(BatteryManager::class.java) } catch (e: Exception) { null }
+        try { pct = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1 } catch (e: Exception) { }
+        try {
+            val st = ContextCompat.registerReceiver(
+                this, null, IntentFilter(Intent.ACTION_BATTERY_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            if (st != null) {
+                if (st.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0) plugged = true
+                val s = st.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                if (s == BatteryManager.BATTERY_STATUS_CHARGING || s == BatteryManager.BATTERY_STATUS_FULL) plugged = true
+                if (pct < 0) {
+                    val lvl = st.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                    val sc = st.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                    if (lvl >= 0 && sc > 0) pct = lvl * 100 / sc
+                }
+            }
+        } catch (e: Exception) { }
+        try { if (bm?.isCharging == true) plugged = true } catch (e: Exception) { }
+        try {
+            val s = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS) ?: -1
+            if (s == BatteryManager.BATTERY_STATUS_CHARGING || s == BatteryManager.BATTERY_STATUS_FULL ||
+                s == BatteryManager.BATTERY_STATUS_NOT_CHARGING) plugged = true
+        } catch (e: Exception) { }
+        return pct to plugged
+    }
+
+    /** Cable in/out: report right away instead of waiting for the next 5-minute heartbeat. */
+    private val power = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context, i: Intent) {
+            if (running) main.postDelayed({ sendHeartbeat() }, 1500L)
+        }
+    }
+    private var powerRegistered = false
+
     private fun nightFlash(): Boolean {
         val p = Prefs.p(this)
         return p.getBoolean("geceFlas", true) && motionOn && p.getBoolean("izleyiciUyari", true)
@@ -552,6 +596,7 @@ class CameraService : LifecycleService() {
     override fun onDestroy() {
         running = false
         main.removeCallbacks(heartbeat)
+        if (powerRegistered) { try { unregisterReceiver(power) } catch (e: Exception) { }; powerRegistered = false }
         try { getSystemService(SensorManager::class.java).unregisterListener(shake) } catch (e: Exception) { }
         Prefs.p(this).unregisterOnSharedPreferenceChangeListener(prefListener)
         sig?.stop()
