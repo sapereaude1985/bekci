@@ -137,6 +137,7 @@ fun HomeScreen() {
     var linking by remember { mutableStateOf(false) }
     var askUnlink by remember { mutableStateOf(false) }
     var askReset by remember { mutableStateOf(false) }
+    var diag by remember { mutableStateOf<Diagnostics?>(null) }
     var baglanti by remember { mutableStateOf(p.getBoolean("baglanti", false)) }
     var confirmNew by remember { mutableStateOf(false) }
 
@@ -567,6 +568,11 @@ fun HomeScreen() {
                 ROLE_WATCH -> WatcherHome(
                     paired = paired, watchOn = watchOn, code = code, lastTime = lastTime, batteryOk = batteryOk,
                     linking = linking, baglanti = baglanti, onUnlink = { askUnlink = true },
+                    onDiag = {
+                        val d = Diagnostics(ctx.applicationContext, code)
+                        diag = d
+                        scope.launch { d.run() }
+                    },
                     camMotion = camMotion,
                     camHealth = camHealth,
                     refreshing = refreshing,
@@ -707,6 +713,44 @@ fun HomeScreen() {
                 ) { Text("Tümünü sil") }
             },
             dismissButton = { TextButton(onClick = { askDelete = false }) { Text("Vazgeç") } }
+        )
+    }
+
+    diag?.let { d ->
+        AlertDialog(
+            onDismissRequest = { if (!d.running) diag = null },
+            title = { Text("Bağlantı testi") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    d.rows.forEach { r ->
+                        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
+                            Box(Modifier.size(26.dp), contentAlignment = Alignment.Center) {
+                                when (r.state) {
+                                    1 -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    2 -> Text("✅")
+                                    3 -> Text("⚠️")
+                                    4 -> Text("❌")
+                                    else -> Text("○", color = MaterialTheme.colorScheme.outline)
+                                }
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text(r.title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                                if (r.detail.isNotEmpty()) Text(
+                                    r.detail, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    if (d.verdict.isNotEmpty()) {
+                        HorizontalDivider(Modifier.padding(vertical = 10.dp))
+                        Text(d.verdict, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            },
+            confirmButton = { TextButton(enabled = !d.running, onClick = { diag = null }) { Text("Kapat") } },
+            dismissButton = { TextButton(enabled = !d.running, onClick = { scope.launch { d.run() } }) { Text("Tekrar test et") } }
         )
     }
 
@@ -1016,7 +1060,7 @@ private fun CameraHome(
 @Composable
 private fun WatcherHome(
     paired: Boolean, watchOn: Boolean, code: String, lastTime: Long, batteryOk: Boolean,
-    linking: Boolean, baglanti: Boolean, onUnlink: () -> Unit,
+    linking: Boolean, baglanti: Boolean, onUnlink: () -> Unit, onDiag: () -> Unit,
     camMotion: Boolean, motionStatus: String, onMotion: (Boolean) -> Unit,
     camHealth: CamHealth, refreshing: Boolean, onRefresh: () -> Unit,
     camFlash: Boolean, flashStatus: String, onFlash: (Boolean) -> Unit,
@@ -1207,6 +1251,10 @@ private fun WatcherHome(
     }
 
     Section("Ayarlar") {
+        SettingRow("Bağlantı testi", "Bir sorun varsa nerede olduğunu adım adım bulur.") {
+            FilledTonalButton(onClick = onDiag) { Text("Başlat") }
+        }
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
         if (baglanti) SettingRow("Eşleştirme", "🔒 Evdeki kameraya kilitli bağlı") {
             TextButton(onClick = onUnlink, colors = ButtonDefaults.textButtonColors(contentColor = c.error)) { Text("Kaldır") }
         } else SettingRow("Eşleştirme", if (linking) "Kilitli eşleştirmeye geçiliyor…" else code) {

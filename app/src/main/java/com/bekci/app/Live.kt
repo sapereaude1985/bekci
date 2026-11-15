@@ -5,7 +5,6 @@ import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
-import android.util.Base64
 import org.json.JSONObject
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
@@ -66,7 +65,15 @@ object Rtc {
             "stun:stun.l.google.com:19302",
             "stun:stun1.l.google.com:19302",
             "stun:stun.cloudflare.com:3478"
-        ).map { PeerConnection.IceServer.builder(it).createIceServer() }
+        ).map { PeerConnection.IceServer.builder(it).createIceServer() } +
+            // Fallback relay for networks that block direct phone-to-phone connections (only encrypted media passes it).
+            PeerConnection.IceServer.builder(
+                listOf(
+                    "turn:openrelay.metered.ca:80",
+                    "turn:openrelay.metered.ca:443",
+                    "turn:openrelay.metered.ca:443?transport=tcp"
+                )
+            ).setUsername("openrelayproject").setPassword("openrelayproject").createIceServer()
         return PeerConnection.RTCConfiguration(servers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
@@ -126,11 +133,15 @@ object Signal {
         return out.toByteArray()
     }
 
+    /** Compressed + encrypted wire form of one signaling message. */
+    fun pack(code: String, msg: JSONObject): ByteArray =
+        Pairing.encrypt(code, deflate(msg.toString().toByteArray(Charsets.UTF_8)))
+
     /** Blocking send; call off the main thread. */
     fun sendSync(topic: String, code: String, msg: JSONObject): Boolean {
         try {
-            val enc = Pairing.encrypt(code, deflate(msg.toString().toByteArray(Charsets.UTF_8)))
-            val b64 = Base64.encodeToString(enc, Base64.NO_WRAP)
+            val enc = pack(code, msg)
+            val b64 = java.util.Base64.getEncoder().encodeToString(enc)
             for (attempt in 1..3) {
                 try {
                     if (b64.length < 3500) Ntfy.postText(topic, "s:$b64") else Ntfy.putFile(topic, enc)
@@ -155,7 +166,7 @@ object Signal {
             } else {
                 val m = o.optString("message")
                 if (!m.startsWith("s:")) return null
-                Base64.decode(m.substring(2), Base64.NO_WRAP)
+                java.util.Base64.getDecoder().decode(m.substring(2))
             }
             JSONObject(String(inflate(Pairing.decrypt(code, enc)), Charsets.UTF_8))
         } catch (e: Exception) {
@@ -337,7 +348,7 @@ class CamLive(
                 override fun onCreateSuccess(d: SessionDescription?) {
                     if (d == null) { main.post { end("teklif oluşturulamadı") }; return }
                     p.setLocalDescription(object : Sdp() {
-                        override fun onSetSuccess() { main.postDelayed(gatherTimeout, 5000) }
+                        override fun onSetSuccess() { main.postDelayed(gatherTimeout, 6000) }
                         override fun onSetFailure(e: String?) { main.post { end("teklif ayarlanamadı") } }
                     }, d)
                 }

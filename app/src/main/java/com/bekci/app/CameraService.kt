@@ -350,6 +350,13 @@ class CameraService : LifecycleService() {
                 if (!on) torchOffUnlessLive() else sendStatus()
             }
             "status" -> sendStatus()
+            "diag" -> {
+                val t = topic
+                Thread {
+                    val r = NetProbe.gather(applicationContext)
+                    try { Ntfy.postText(t, "dg_" + r.joinToString("_")) } catch (e: Exception) { }
+                }.start()
+            }
             "unpair" -> {
                 // The paired watcher released us: new QR, open for a new watcher.
                 val n = Pairing.newCode()

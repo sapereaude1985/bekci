@@ -202,7 +202,7 @@ class LiveActivity : ComponentActivity() {
             onMsg = { m -> main.post { onSignal(m) } },
             app = applicationContext
         ).also { it.start() }
-        main.postDelayed(offerTimeout, 40_000)
+        main.postDelayed(offerTimeout, 45_000)
     }
 
     private fun onSignal(m: JSONObject) {
@@ -269,7 +269,7 @@ class LiveActivity : ComponentActivity() {
                     override fun onCreateSuccess(d: SessionDescription?) {
                         if (d == null) return
                         p.setLocalDescription(object : Sdp() {
-                            override fun onSetSuccess() { main.postDelayed(gatherTimeout, 5000) }
+                            override fun onSetSuccess() { main.postDelayed(gatherTimeout, 6000) }
                             override fun onSetFailure(e: String?) { main.post { fail("Bağlantı kurulamadı.") } }
                         }, d)
                     }

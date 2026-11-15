@@ -11,8 +11,8 @@ android {
         applicationId = "com.bekci.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 22
-        versionName = "2.19"
+        versionCode = 23
+        versionName = "2.20"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
     compileOptions {
@@ -39,6 +39,7 @@ android {
     buildTypes {
         getByName("release") { isMinifyEnabled = false }
     }
+    testOptions { unitTests.isReturnDefaultValues = true }
     lint {
         checkReleaseBuilds = false
         abortOnError = false
@@ -67,4 +68,7 @@ dependencies {
 
     implementation("io.getstream:stream-webrtc-android:1.3.8")
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
